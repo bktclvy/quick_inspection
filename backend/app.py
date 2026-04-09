@@ -15,7 +15,11 @@ app.include_router(stream_router)
 app.include_router(api_router, prefix="/api")
 
 # フロントエンド静的ファイルのマウント（キャッチオールのため最後に配置）
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+# Vite ビルド成果物 (dist/) を優先、なければ旧 frontend/ からサーブ
+_base = os.path.dirname(os.path.dirname(__file__))
+_dist_dir = os.path.join(_base, "dist")
+_frontend_dir = os.path.join(_base, "frontend")
+frontend_dir = _dist_dir if os.path.isdir(_dist_dir) else _frontend_dir
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 

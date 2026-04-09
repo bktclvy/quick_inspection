@@ -6,64 +6,103 @@ AI カメラ検査アプリ。USB ウェブカメラで製品を撮影し、Mobi
 
 - **同一マシンで完結**: フロントエンドとバックエンドは必ず同じPCで動作する。リモート配信は想定外。
 - **Windows 環境**: Python 3.10, DirectShow カメラ
+- **配布**: PyInstaller でのexe化を予定
 
 ## 技術スタック
 
 - Backend: FastAPI + OpenCV + TensorFlow/Keras
-- Frontend: Vanilla HTML/CSS/JS (ビルドツール不要), Chart.js (CDN)
+- Frontend: React 18 + TypeScript + Vite
+  - 状態管理: Zustand
+  - チャート: react-chartjs-2
+  - CSS: Tailwind CSS v4 + インラインスタイル
 - カメラ: サーバー側 OpenCV → MJPEG ストリーミング (`/stream`)
 - 音声: Web Audio API (OK/NG/シャッター音、外部ファイル不要)
 
 ## セットアップ・起動
 
 ```bash
+# Backend
 python -m venv venv
 venv\Scripts\activate     # Windows
 pip install -r requirements.txt
-python run.py             # デスクトップウィンドウで起動
+
+# Frontend
+cd frontend
+npm install
+npm run build             # dist/ にビルド出力
+
+# 起動
+python run.py             # デスクトップウィンドウで起動 (dist/ を配信)
 python run.py --dev       # 開発用: ブラウザ + ホットリロード
 ```
+
+### 開発時 (2ターミナル)
+
+```bash
+# Terminal 1: Backend
+python run.py --dev
+
+# Terminal 2: Frontend (Vite dev server, port 5173)
+cd frontend && npm run dev
+```
+
+Vite dev server がAPIリクエストを FastAPI にプロキシする。
 
 ## 構成
 
 ```
 backend/
-  app.py            # FastAPI app, static mount
+  app.py            # FastAPI app, static mount (dist/ 優先)
   camera.py         # CameraManager singleton (OpenCV, thread-safe)
   inference.py      # ModelManager (TF model load/predict)
   training.py       # Trainer (MobileNetV2 transfer learning, WS progress)
   state_machine.py  # InspectionStateMachine (IDLE→DETECTING→JUDGED→COOLDOWN)
   routes/
-    api.py          # REST: /api/dataset/*, /api/model/*, /api/training/*, /api/config
-    ws.py           # WebSocket: /ws/camera, /ws/training
+    api.py          # REST: /api/products/*, /api/training/*, /api/inspection/*
+    ws.py           # WebSocket: /ws/inspection, /ws/training
 
-frontend/
-  index.html        # SPA (3ページ: 検査, データセット, 学習)
-  css/style.css     # Light theme (Clean Room)
-  js/
-    app.js          # SPA routing
-    camera.js       # MJPEG init, カメラ選択, inspection WS
-    inspection.js   # 検査ページ
-    dataset.js      # データセット撮影ページ
-    training.js     # 学習ページ + Chart.js
-    components.js   # Toast, AudioFeedback (Web Audio API)
+frontend/           # Vite + React + TypeScript
+  src/
+    main.tsx        # エントリーポイント
+    App.tsx         # Router + Layout
+    index.css       # Tailwind エントリー + テーマ変数
+    types/          # TypeScript 型定義
+    stores/         # Zustand ストア (app, inspection, training)
+    hooks/          # カスタム hooks (WS, audio, keyboard)
+    api/            # API クライアント
+    components/
+      app-header.tsx    # ヘッダー
+      inspect-page.tsx  # 検査ページ
+      setup-page.tsx    # セットアップページ (ウィザード入口)
+      setup-wizard.tsx  # セットアップウィザード
+      layout/           # Toast
+      camera/           # CameraFeed, ROICanvas
+      steps/            # ウィザードの各ステップ
+        roi-step.tsx
+        template-step.tsx
+        dataset-step.tsx
+        training-step.tsx
+        assign-step.tsx
 
-datasets/           # 撮影画像 (クラス別サブフォルダ)
-models/             # 学習済みモデル (.keras + _meta.json)
+frontend-legacy/    # 旧 Vanilla JS フロントエンド (参照用)
+dist/               # Vite ビルド出力 (FastAPI が配信)
+products/           # 製品データ (ROI, テンプレート, データセット, モデル)
 ```
 
 ## 検査ステートマシン
 
 ```
-IDLE → DETECTING → JUDGED → COOLDOWN → IDLE
+IDLE → DETECTING → INSPECTING → JUDGED → WAITING_REMOVAL → IDLE
 ```
 
-- 存在検知: フレーム差分 (背景モデルとの比較)
-- 判定: N フレーム蓄積後、多数決 + 信頼度加重
-- パラメータ: presence_threshold, required_frames, cooldown_ms, confidence_threshold
+- 存在検知: 背景差分 or テンプレートマッチング
+- 判定: ROI別モデル推論 + 多数決
+- パラメータ: presence_threshold, stability_frames, judged_display_ms 等
 
 ## コーディング規約
 
-- フロントは Vanilla JS (フレームワーク不使用)
+- フロントは React + TypeScript (Vite)
 - UI テーマはライト系 (ダーク非推奨)
+- UIライブラリ (shadcn/ui, MUI, Tailwind等) は使わない。手書きCSS
+- CSS は 4px グリッドベースのスペーシングシステム
 - Python は型ヒントを適宜使用

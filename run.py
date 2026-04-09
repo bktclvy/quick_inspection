@@ -1,8 +1,26 @@
 """Application entry point — opens as a desktop window via pywebview."""
+import os
 import sys
 import threading
 import uvicorn
 import config
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PORT_FILE = os.path.join(_BASE_DIR, ".dev-port")
+
+
+def _write_port_file():
+    """開発時に Vite proxy が参照するポートファイルを書き出す。"""
+    with open(_PORT_FILE, "w") as f:
+        f.write(str(config.PORT))
+
+
+def _cleanup_port_file():
+    """ポートファイルを削除する。"""
+    try:
+        os.remove(_PORT_FILE)
+    except FileNotFoundError:
+        pass
 
 
 def start_server():
@@ -17,12 +35,18 @@ def start_server():
 if __name__ == "__main__":
     # --dev flag for browser-based development with hot reload
     if "--dev" in sys.argv:
-        uvicorn.run(
-            "backend.app:app",
-            host="127.0.0.1",
-            port=config.PORT,
-            reload=True,
-        )
+        _write_port_file()
+        print(f"Backend: http://127.0.0.1:{config.PORT}")
+        print(f"Port written to {_PORT_FILE}")
+        try:
+            uvicorn.run(
+                "backend.app:app",
+                host="127.0.0.1",
+                port=config.PORT,
+                reload=True,
+            )
+        finally:
+            _cleanup_port_file()
     else:
         import webview
 

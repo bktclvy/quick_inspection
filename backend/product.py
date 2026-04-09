@@ -56,6 +56,10 @@ class Product:
             "removal_frames": config.REMOVAL_FRAMES,
             "judged_display_ms": config.JUDGED_DISPLAY_MS,
             "trigger_mode": config.DEFAULT_TRIGGER_MODE,
+            "presence_threshold": config.PRESENCE_THRESHOLD,
+            "stability_threshold": config.STABILITY_THRESHOLD,
+            "stability_frames": config.STABILITY_FRAMES,
+            "removal_diff_threshold": config.REMOVAL_DIFF_THRESHOLD,
         }
         self.created_at = created_at or time.strftime("%Y-%m-%d %H:%M:%S")
         self.updated_at = updated_at or self.created_at
@@ -88,6 +92,7 @@ class ProductManager:
         self._lock = threading.Lock()
         self._products: dict[str, Product] = {}
         self._templates: dict[str, dict[str, np.ndarray]] = {}  # product_id -> {roi_id -> グレースケール画像}
+        self._backgrounds: dict[str, np.ndarray] = {}  # product_id -> グレースケール背景画像
         os.makedirs(self._dir, exist_ok=True)
         self._load_all()
 
@@ -111,6 +116,9 @@ class ProductManager:
     def counter_file(self, product_id: str) -> str:
         return os.path.join(self._product_dir(product_id), "counters.json")
 
+    def background_path(self, product_id: str) -> str:
+        return os.path.join(self._product_dir(product_id), "background.jpg")
+
     def _load_all(self):
         if not os.path.isdir(self._dir):
             return
@@ -123,6 +131,7 @@ class ProductManager:
                     p = Product.from_dict(data)
                     self._products[p.id] = p
                     self._load_templates(p.id)
+                    self._load_background(p.id)
                 except (json.JSONDecodeError, KeyError):
                     pass
 
@@ -318,6 +327,43 @@ class ProductManager:
             gray = cv2.resize(gray, (template.shape[1], template.shape[0]))
         result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
         return max(0.0, float(result[0][0]))
+
+    # ── 背景画像 ──────────────────────────────────────────
+
+    def _load_background(self, product_id: str):
+        bg_path = self.background_path(product_id)
+        if os.path.isfile(bg_path):
+            img = cv2.imread(bg_path, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                self._backgrounds[product_id] = img
+
+    def capture_background(self, product_id: str, frame: np.ndarray) -> bool:
+        """現在のフレームを背景参照画像として保存する。"""
+        if product_id not in self._products:
+            return False
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        bg_path = self.background_path(product_id)
+        os.makedirs(os.path.dirname(bg_path), exist_ok=True)
+        cv2.imwrite(bg_path, gray)
+        self._backgrounds[product_id] = gray
+        return True
+
+    def get_background(self, product_id: str) -> np.ndarray | None:
+        return self._backgrounds.get(product_id)
+
+    def has_background(self, product_id: str) -> bool:
+        return product_id in self._backgrounds
+
+    def background_diff(self, product_id: str, frame: np.ndarray) -> float | None:
+        """フレーム全体と背景のピクセル平均差分値を返す (0-255)。"""
+        bg = self._backgrounds.get(product_id)
+        if bg is None:
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if gray.shape != bg.shape:
+            gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
+        diff = cv2.absdiff(gray, bg)
+        return float(diff.mean())
 
     # ── モデル一覧 ────────────────────────────────────────
 

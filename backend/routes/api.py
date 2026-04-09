@@ -149,6 +149,22 @@ async def capture_template(product_id: str, roi_id: str):
     return {"message": "テンプレートを撮影しました"}
 
 
+@router.post("/products/{product_id}/capture-background")
+async def capture_background(product_id: str):
+    """現在のカメラフレームを背景参照画像として保存する。"""
+    frame = camera.read_frame()
+    if frame is None:
+        raise HTTPException(500, "カメラからフレームを取得できません")
+    if not product_manager.capture_background(product_id, frame):
+        raise HTTPException(404, "製品が見つかりません")
+    return {"message": "背景を撮影しました", "has_background": True}
+
+
+@router.get("/products/{product_id}/background-status")
+async def background_status(product_id: str):
+    return {"has_background": product_manager.has_background(product_id)}
+
+
 @router.get("/products/{product_id}/rois/{roi_id}/template")
 async def get_template(product_id: str, roi_id: str):
     path = product_manager.get_template_path(product_id, roi_id)
@@ -706,6 +722,10 @@ class InspectionConfig(BaseModel):
     removal_frames: int | None = None
     judged_display_ms: int | None = None
     trigger_mode: str | None = None
+    presence_threshold: float | None = None
+    stability_threshold: float | None = None
+    stability_frames: int | None = None
+    removal_diff_threshold: float | None = None
 
 
 @router.put("/products/{product_id}/config")

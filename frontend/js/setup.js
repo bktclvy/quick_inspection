@@ -28,7 +28,7 @@ const SetupPage = {
       }
     });
 
-    // パラメータコントロール
+    // パラメータコントロール — テンプレートモード
     const matchSlider = document.getElementById('matchThreshold');
     const matchVal = document.getElementById('matchThresholdVal');
     matchSlider.addEventListener('input', () => {
@@ -45,7 +45,26 @@ const SetupPage = {
 
     document.getElementById('triggerFrames').addEventListener('change', () => this.saveConfig());
     document.getElementById('judgedDisplayMs').addEventListener('change', () => this.saveConfig());
-    document.getElementById('triggerMode').addEventListener('change', () => this.saveConfig());
+
+    // パラメータコントロール — 背景差分モード
+    for (const [id, valId] of [['presenceThreshold', 'presenceThresholdVal'],
+                                ['stabilityThreshold', 'stabilityThresholdVal'],
+                                ['removalDiffThreshold', 'removalDiffThresholdVal']]) {
+      const slider = document.getElementById(id);
+      const span = document.getElementById(valId);
+      slider.addEventListener('input', () => { span.textContent = parseFloat(slider.value).toFixed(id === 'stabilityThreshold' ? 1 : 0); });
+      slider.addEventListener('change', () => this.saveConfig());
+    }
+    document.getElementById('stabilityFrames').addEventListener('change', () => this.saveConfig());
+
+    // トリガーモード切替
+    document.getElementById('triggerMode').addEventListener('change', () => {
+      this._updateTriggerModeUI();
+      this.saveConfig();
+    });
+
+    // 背景撮影
+    document.getElementById('captureBgBtn').addEventListener('click', () => this.captureBackground());
 
     // データセット撮影
     document.getElementById('captureBtn').addEventListener('click', () => this.capture());
@@ -649,13 +668,28 @@ const SetupPage = {
     if (!pid) return;
     try {
       const cfg = await apiFetch(`/products/${pid}/config`);
-      document.getElementById('matchThreshold').value = cfg.match_threshold;
-      document.getElementById('matchThresholdVal').textContent = cfg.match_threshold.toFixed(2);
-      document.getElementById('triggerFrames').value = cfg.trigger_frames;
-      document.getElementById('removalThreshold').value = cfg.removal_threshold;
-      document.getElementById('removalThresholdVal').textContent = cfg.removal_threshold.toFixed(2);
-      document.getElementById('judgedDisplayMs').value = cfg.judged_display_ms;
-      document.getElementById('triggerMode').value = cfg.trigger_mode;
+      // テンプレートモード
+      document.getElementById('matchThreshold').value = cfg.match_threshold ?? 0.80;
+      document.getElementById('matchThresholdVal').textContent = (cfg.match_threshold ?? 0.80).toFixed(2);
+      document.getElementById('triggerFrames').value = cfg.trigger_frames ?? 3;
+      document.getElementById('removalThreshold').value = cfg.removal_threshold ?? 0.50;
+      document.getElementById('removalThresholdVal').textContent = (cfg.removal_threshold ?? 0.50).toFixed(2);
+      // 背景差分モード
+      document.getElementById('presenceThreshold').value = cfg.presence_threshold ?? 25;
+      document.getElementById('presenceThresholdVal').textContent = Math.round(cfg.presence_threshold ?? 25);
+      document.getElementById('stabilityThreshold').value = cfg.stability_threshold ?? 5;
+      document.getElementById('stabilityThresholdVal').textContent = (cfg.stability_threshold ?? 5).toFixed(1);
+      document.getElementById('stabilityFrames').value = cfg.stability_frames ?? 8;
+      document.getElementById('removalDiffThreshold').value = cfg.removal_diff_threshold ?? 15;
+      document.getElementById('removalDiffThresholdVal').textContent = Math.round(cfg.removal_diff_threshold ?? 15);
+      // 共通
+      document.getElementById('judgedDisplayMs').value = cfg.judged_display_ms ?? 2000;
+      document.getElementById('triggerMode').value = cfg.trigger_mode ?? 'auto_background';
+      this._updateTriggerModeUI();
+
+      // 背景ステータス
+      const bgStatus = await apiFetch(`/products/${pid}/background-status`);
+      document.getElementById('bgStatus').textContent = bgStatus.has_background ? '撮影済' : '未撮影';
     } catch (e) { /* 無視 */ }
   },
 
@@ -671,10 +705,32 @@ const SetupPage = {
           removal_threshold: parseFloat(document.getElementById('removalThreshold').value),
           judged_display_ms: parseInt(document.getElementById('judgedDisplayMs').value),
           trigger_mode: document.getElementById('triggerMode').value,
+          presence_threshold: parseFloat(document.getElementById('presenceThreshold').value),
+          stability_threshold: parseFloat(document.getElementById('stabilityThreshold').value),
+          stability_frames: parseInt(document.getElementById('stabilityFrames').value),
+          removal_diff_threshold: parseFloat(document.getElementById('removalDiffThreshold').value),
         },
       });
     } catch (e) {
       Toast.error('設定の保存に失敗: ' + e.message);
+    }
+  },
+
+  _updateTriggerModeUI() {
+    const mode = document.getElementById('triggerMode').value;
+    document.getElementById('bgModeParams').style.display = mode === 'auto_background' ? '' : 'none';
+    document.getElementById('templateModeParams').style.display = mode === 'auto_template' ? '' : 'none';
+  },
+
+  async captureBackground() {
+    const pid = AppState.selectedProductId;
+    if (!pid) { Toast.info('製品を選択してください'); return; }
+    try {
+      await apiFetch(`/products/${pid}/capture-background`, { method: 'POST' });
+      document.getElementById('bgStatus').textContent = '撮影済';
+      Toast.success('背景を撮影しました');
+    } catch (e) {
+      Toast.error('背景撮影に失敗: ' + e.message);
     }
   },
 };

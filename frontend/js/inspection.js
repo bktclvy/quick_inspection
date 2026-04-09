@@ -5,7 +5,7 @@
 const InspectionPage = {
   history: [],
   maxHistory: 50,
-  triggerMode: 'auto',
+  triggerMode: 'auto_background',
   inspecting: false,
 
   init() {
@@ -124,7 +124,15 @@ const InspectionPage = {
         card.className = 'judgment-card';
         labelEl.textContent = '待機中';
         confEl.textContent = '';
-        if (data.match_scores) {
+        if (data.trigger_mode === 'auto_background') {
+          if (data.needs_background) {
+            progressEl.textContent = '背景未撮影 → セットアップで撮影してください';
+          } else if (data.bg_diff != null) {
+            progressEl.textContent = `背景差分: ${data.bg_diff}`;
+          } else {
+            progressEl.textContent = '';
+          }
+        } else if (data.match_scores) {
           const scores = Object.values(data.match_scores).filter(s => s !== null);
           if (scores.length > 0) {
             const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
@@ -139,6 +147,17 @@ const InspectionPage = {
           progressEl.textContent = data.trigger_mode === 'manual' ? 'スペースキーで検査' : '';
         }
         document.getElementById('roiResultsCard').style.display = 'none';
+        break;
+
+      case 'detecting':
+        card.className = 'judgment-card detecting';
+        labelEl.textContent = '物体検出中...';
+        confEl.textContent = '';
+        if (data.stability_count != null) {
+          progressEl.textContent = `安定待ち: ${data.stability_count}/${data.stability_required}`;
+        } else {
+          progressEl.textContent = '';
+        }
         break;
 
       case 'inspecting':

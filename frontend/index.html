@@ -203,25 +203,59 @@
                 <div class="param-item">
                   <label>トリガーモード</label>
                   <select id="triggerMode" class="select-sm">
-                    <option value="auto">自動 (テンプレート)</option>
+                    <option value="auto_background">自動 (背景差分)</option>
+                    <option value="auto_template">自動 (テンプレート)</option>
                     <option value="manual">手動 (スペースキー)</option>
                   </select>
                 </div>
-                <div class="param-item">
-                  <label>マッチ閾値</label>
-                  <input type="range" min="0.50" max="0.99" step="0.01" value="0.80" id="matchThreshold">
-                  <span class="mono-sm" id="matchThresholdVal">0.80</span>
+
+                <!-- 背景差分モード設定 -->
+                <div id="bgModeParams">
+                  <div class="param-item" style="margin-top:0.5rem">
+                    <label>背景画像</label>
+                    <button class="btn btn--sm btn--accent" id="captureBgBtn">背景を撮影</button>
+                    <span class="mono-sm" id="bgStatus">未撮影</span>
+                  </div>
+                  <div class="param-item">
+                    <label>存在閾値</label>
+                    <input type="range" min="5" max="80" step="1" value="25" id="presenceThreshold">
+                    <span class="mono-sm" id="presenceThresholdVal">25</span>
+                  </div>
+                  <div class="param-item">
+                    <label>安定閾値</label>
+                    <input type="range" min="1" max="30" step="0.5" value="5" id="stabilityThreshold">
+                    <span class="mono-sm" id="stabilityThresholdVal">5.0</span>
+                  </div>
+                  <div class="param-item">
+                    <label>安定フレーム数</label>
+                    <input type="number" min="2" max="30" value="8" id="stabilityFrames" class="input-sm">
+                  </div>
+                  <div class="param-item">
+                    <label>除去差分閾値</label>
+                    <input type="range" min="3" max="50" step="1" value="15" id="removalDiffThreshold">
+                    <span class="mono-sm" id="removalDiffThresholdVal">15</span>
+                  </div>
                 </div>
-                <div class="param-item">
-                  <label>トリガーフレーム数</label>
-                  <input type="number" min="1" max="30" value="3" id="triggerFrames" class="input-sm">
+
+                <!-- テンプレートモード設定 -->
+                <div id="templateModeParams" style="display:none">
+                  <div class="param-item" style="margin-top:0.5rem">
+                    <label>マッチ閾値</label>
+                    <input type="range" min="0.50" max="0.99" step="0.01" value="0.80" id="matchThreshold">
+                    <span class="mono-sm" id="matchThresholdVal">0.80</span>
+                  </div>
+                  <div class="param-item">
+                    <label>トリガーフレーム数</label>
+                    <input type="number" min="1" max="30" value="3" id="triggerFrames" class="input-sm">
+                  </div>
+                  <div class="param-item">
+                    <label>除去閾値</label>
+                    <input type="range" min="0.10" max="0.80" step="0.01" value="0.50" id="removalThreshold">
+                    <span class="mono-sm" id="removalThresholdVal">0.50</span>
+                  </div>
                 </div>
-                <div class="param-item">
-                  <label>除去閾値</label>
-                  <input type="range" min="0.10" max="0.80" step="0.01" value="0.50" id="removalThreshold">
-                  <span class="mono-sm" id="removalThresholdVal">0.50</span>
-                </div>
-                <div class="param-item">
+
+                <div class="param-item" style="margin-top:0.5rem">
                   <label>結果表示 (ms)</label>
                   <input type="number" min="500" max="10000" step="100" value="2000" id="judgedDisplayMs" class="input-sm">
                 </div>

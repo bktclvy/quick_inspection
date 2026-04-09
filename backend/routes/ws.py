@@ -1,6 +1,8 @@
 """WebSocketエンドポイント: 検査結果と学習進捗の配信。"""
 import asyncio
 import json
+import cv2
+import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from backend.camera import camera
 from backend.product import product_manager
@@ -85,6 +87,7 @@ async def inspection_stream(websocket: WebSocket):
             pass
 
     recv_task = asyncio.create_task(receive_loop())
+    prev_gray = None
 
     try:
         while True:
@@ -108,10 +111,12 @@ async def inspection_stream(websocket: WebSocket):
             roi_dicts = [r.to_dict() for r in rois]
             from backend.state_machine import InspectionState
 
+            trigger_mode = _state_machine.trigger_mode
+
             # ── 手動トリガー処理 ──
             if manual_trigger_event.is_set():
                 manual_trigger_event.clear()
-                if _state_machine.trigger_mode == "manual":
+                if trigger_mode == "manual":
                     roi_results = await loop.run_in_executor(
                         None, _model_manager.predict_rois, frame, roi_dicts)
                     result = _state_machine.manual_trigger(roi_results)
@@ -120,21 +125,51 @@ async def inspection_stream(websocket: WebSocket):
                     await asyncio.sleep(frame_interval)
                     continue
 
-            # ── テンプレートマッチスコア算出 ──
-            match_scores = {}
-            for roi in rois:
-                score = await loop.run_in_executor(
-                    None, product_manager.match_score, _active_product_id, roi.id, frame)
-                match_scores[roi.id] = score
+            # ── 背景差分モード ──
+            if trigger_mode == "auto_background":
+                bg_diff = await loop.run_in_executor(
+                    None, product_manager.background_diff, _active_product_id, frame)
 
-            # ── ステートマシンでフレーム処理 ──
-            roi_results = None
-            if _state_machine.state == InspectionState.INSPECTING:
-                roi_results = await loop.run_in_executor(
-                    None, _model_manager.predict_rois, frame, roi_dicts)
+                # フレーム間差分
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if prev_gray is None:
+                    frame_diff = 0.0
+                else:
+                    fd = cv2.absdiff(gray, prev_gray)
+                    frame_diff = float(fd.mean())
+                prev_gray = gray
 
-            result = await loop.run_in_executor(
-                None, _state_machine.process_frame, match_scores, roi_results)
+                roi_results = None
+                if _state_machine.state == InspectionState.INSPECTING:
+                    roi_results = await loop.run_in_executor(
+                        None, _model_manager.predict_rois, frame, roi_dicts)
+
+                result = _state_machine.process_frame_background(
+                    bg_diff, frame_diff, roi_results)
+
+            # ── テンプレートマッチモード ──
+            elif trigger_mode == "auto_template":
+                match_scores = {}
+                for roi in rois:
+                    score = await loop.run_in_executor(
+                        None, product_manager.match_score, _active_product_id, roi.id, frame)
+                    match_scores[roi.id] = score
+
+                roi_results = None
+                if _state_machine.state == InspectionState.INSPECTING:
+                    roi_results = await loop.run_in_executor(
+                        None, _model_manager.predict_rois, frame, roi_dicts)
+
+                result = _state_machine.process_frame(match_scores, roi_results)
+
+            # ── 手動モード（トリガー待ち）──
+            else:
+                result = {"state": _state_machine.state.value,
+                          "trigger_mode": "manual",
+                          "counters": _state_machine.get_counters()}
+                if _state_machine.last_judgment and _state_machine.state == InspectionState.JUDGED:
+                    elapsed = (asyncio.get_event_loop().time() * 1000)
+                    result.update(_state_machine.last_judgment)
 
             msg = {"type": "state_update", **result}
             await websocket.send_json(msg)

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip:*)",
+      "Bash(python:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl -s http://localhost:8000/api/camera/status)",
+      "Bash(curl:*)",
+      "Read(//tmp/**)",
+      "Bash(xxd \"C:\\\\Users\\\\bktcl\\\\quick_inspection\\\\frontend\\\\js\\\\setup.js\")",
+      "Bash(python3:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+datasets/
+models/
+products/
+.env

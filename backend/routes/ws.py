@@ -56,6 +56,7 @@ def stop_inspection():
     global _active_product_id, _inspection_active
     _active_product_id = None
     _inspection_active = False
+    camera.unfreeze_frame()
 
 
 def get_inspection_status() -> dict:
@@ -71,6 +72,7 @@ async def inspection_stream(websocket: WebSocket):
     await inspection_mgr.connect(websocket)
 
     manual_trigger_event = asyncio.Event()
+    confirm_event = asyncio.Event()
 
     async def receive_loop():
         try:
@@ -82,11 +84,14 @@ async def inspection_stream(websocket: WebSocket):
                     continue
                 if msg.get("action") == "manual_trigger":
                     manual_trigger_event.set()
+                elif msg.get("action") == "confirm":
+                    confirm_event.set()
         except (WebSocketDisconnect, Exception):
             pass
 
     recv_task = asyncio.create_task(receive_loop())
     prev_gray = None
+    last_processed_frame_id = -1
 
     try:
         while True:
@@ -95,11 +100,20 @@ async def inspection_stream(websocket: WebSocket):
                 continue
 
             loop = asyncio.get_event_loop()
-            frame = await loop.run_in_executor(None, camera.read_frame)
 
+            # ストリームが読んだ最新フレームを再利用（カメラ二重読み取り防止）
+            frame, frame_id = camera.get_latest_frame()
             if frame is None:
-                await asyncio.sleep(0.5)
+                frame = await loop.run_in_executor(None, camera.read_frame)
+                frame_id = -1
+            if frame is None:
+                await asyncio.sleep(0.1)
                 continue
+            # 同じフレームを二度処理しない
+            if frame_id == last_processed_frame_id and frame_id >= 0:
+                await asyncio.sleep(0.005)  # 5ms待ってリトライ
+                continue
+            last_processed_frame_id = frame_id
 
             product = product_manager.get(_active_product_id)
             if not product or not product.rois:
@@ -109,6 +123,17 @@ async def inspection_stream(websocket: WebSocket):
             rois = product.rois
             roi_dicts = [r.to_dict() for r in rois]
             from backend.state_machine import InspectionState
+
+            # ── 確認アクション ──
+            if confirm_event.is_set():
+                confirm_event.clear()
+                if _state_machine.state == InspectionState.WAITING_CONFIRM:
+                    result = _state_machine.confirm()
+                    camera.unfreeze_frame()
+                    msg = {"type": "state_update", **result}
+                    await websocket.send_json(msg)
+                    await asyncio.sleep(0)
+                    continue
 
             # ── 手動トリガー処理 ──
             if manual_trigger_event.is_set():
@@ -150,10 +175,18 @@ async def inspection_stream(websocket: WebSocket):
             if _state_machine.state == InspectionState.INSPECTING:
                 roi_results = await loop.run_in_executor(
                     None, _model_manager.predict_rois, frame, roi_dicts)
+                # 検査時のフレームをフリーズ（取出しまで表示し続ける）
+                camera.freeze_frame(frame)
+
+            prev_state = _state_machine.state
 
             # ステートマシン処理
             result = _state_machine.process_frame_unified(
                 match_scores, bg_match, frame_diff, roi_results)
+
+            # IDLEに戻ったらフリーズ解除
+            if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
+                camera.unfreeze_frame()
 
             msg = {"type": "state_update", **result}
             await websocket.send_json(msg)

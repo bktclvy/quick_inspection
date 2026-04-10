@@ -3,6 +3,7 @@ import os
 import json
 import time
 import shutil
+import send2trash
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -244,6 +245,14 @@ async def background_status(product_id: str):
     return {"has_background": product_manager.has_background(product_id)}
 
 
+@router.get("/products/{product_id}/background")
+async def get_background(product_id: str):
+    path = product_manager.background_path(product_id)
+    if not os.path.exists(path):
+        raise HTTPException(404, "背景画像が見つかりません")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 @router.get("/products/{product_id}/rois/{roi_id}/template")
 async def get_template(product_id: str, roi_id: str, index: int = 0):
     path = product_manager.get_template_path(product_id, roi_id, index)
@@ -284,6 +293,61 @@ async def camera_list():
     return {"cameras": camera.list_cameras()}
 
 
+class CameraSettings(BaseModel):
+    flip_h: bool | None = None
+    flip_v: bool | None = None
+    autofocus: bool | None = None
+    focus_value: int | None = None
+    auto_exposure: bool | None = None
+    exposure_value: int | None = None
+
+
+@router.post("/camera/settings")
+async def camera_settings(cfg: CameraSettings, product_id: str | None = None):
+    if cfg.flip_h is not None or cfg.flip_v is not None:
+        camera.set_flip(cfg.flip_h or False, cfg.flip_v or False)
+    if cfg.autofocus is not None:
+        camera.set_autofocus(cfg.autofocus, cfg.focus_value)
+    if cfg.auto_exposure is not None:
+        camera.set_exposure(cfg.auto_exposure, cfg.exposure_value)
+    # 製品configにも保存（永続化）
+    if product_id:
+        p = product_manager.get(product_id)
+        if p:
+            cam_config = {
+                "camera_flip_h": camera._flip_h,
+                "camera_flip_v": camera._flip_v,
+            }
+            if cfg.autofocus is not None:
+                cam_config["camera_autofocus"] = cfg.autofocus
+                cam_config["camera_focus_value"] = cfg.focus_value
+            if cfg.auto_exposure is not None:
+                cam_config["camera_auto_exposure"] = cfg.auto_exposure
+                cam_config["camera_exposure_value"] = cfg.exposure_value
+            new_config = {**p.inspection_config, **cam_config}
+            product_manager.update(product_id, inspection_config=new_config)
+    return camera.get_camera_properties()
+
+
+@router.get("/camera/properties")
+async def camera_properties():
+    return camera.get_camera_properties()
+
+
+@router.get("/products/{product_id}/trigger-scores")
+async def trigger_scores(product_id: str):
+    """現在のフレームでトリガーマッチスコアと背景マッチスコアをリアルタイム取得。"""
+    frame = camera.read_frame()
+    if frame is None:
+        return {"trigger_score": None, "bg_score": None}
+    trigger = product_manager.trigger_match_score(product_id, frame)
+    bg = product_manager.background_match_score(product_id, frame)
+    return {
+        "trigger_score": round(trigger, 4) if trigger is not None else None,
+        "bg_score": round(bg, 4) if bg is not None else None,
+    }
+
+
 # ─── データセット（製品スコープ）─────────────────────────
 
 @router.get("/products/{product_id}/dataset/classes")
@@ -296,10 +360,12 @@ async def dataset_classes(product_id: str, roi_id: str | None = None):
         base = os.path.join(base, roi_id)
     os.makedirs(base, exist_ok=True)
     meta = _load_classes_meta(base)
+    # ROI IDのディレクトリはクラスとして扱わない
+    roi_ids = {r.id for r in p.rois} if not roi_id else set()
     classes = []
     for name in sorted(os.listdir(base)):
         path = os.path.join(base, name)
-        if os.path.isdir(path):
+        if os.path.isdir(path) and name not in roi_ids and not name.startswith('.'):
             count = len([f for f in os.listdir(path)
                         if f.lower().endswith((".jpg", ".jpeg", ".png"))])
             classes.append({
@@ -340,6 +406,13 @@ async def create_class(product_id: str, data: CreateClass):
 
 @router.delete("/products/{product_id}/dataset/class/{class_name}")
 async def delete_class(product_id: str, class_name: str, roi_id: str | None = None):
+    # ROIディレクトリの誤削除防止
+    p = product_manager.get(product_id)
+    if p:
+        roi_ids = {r.id for r in p.rois}
+        if class_name in roi_ids:
+            raise HTTPException(400, "ROIデータディレクトリは削除できません")
+
     base = product_manager.datasets_dir(product_id)
     meta_base = base
     if roi_id:
@@ -349,7 +422,12 @@ async def delete_class(product_id: str, class_name: str, roi_id: str | None = No
         path = os.path.join(base, class_name)
     if not os.path.exists(path):
         raise HTTPException(404, f"クラス「{class_name}」が見つかりません")
-    shutil.rmtree(path)
+    # products配下のパスのみ削除を許可
+    abs_path = os.path.abspath(path)
+    abs_base = os.path.abspath(product_manager.datasets_dir(product_id))
+    if not abs_path.startswith(os.path.abspath(product_manager._dir) + os.sep):
+        raise HTTPException(400, "安全でないパス")
+    send2trash.send2trash(abs_path)
     # judgment メタデータからも削除
     meta = _load_classes_meta(meta_base)
     meta.pop(class_name, None)
@@ -759,6 +837,14 @@ async def start_inspection(data: InspectionStart):
         product_manager.counter_file(data.product_id),
     )
 
+    # カメラ設定を適用
+    cfg = p.inspection_config
+    camera.set_flip(cfg.get("camera_flip_h", False), cfg.get("camera_flip_v", False))
+    if "camera_autofocus" in cfg:
+        camera.set_autofocus(cfg["camera_autofocus"], cfg.get("camera_focus_value"))
+    if "camera_auto_exposure" in cfg:
+        camera.set_exposure(cfg["camera_auto_exposure"], cfg.get("camera_exposure_value"))
+
     # ROIに必要なモデルを読み込み
     for roi in p.rois:
         if roi.model_name and roi.model_name not in model_manager.get_loaded_models():
@@ -813,6 +899,15 @@ class InspectionConfig(BaseModel):
     stability_threshold: float | None = None
     stability_frames: int | None = None
     removal_diff_threshold: float | None = None
+    pieces_per_box: int | None = None
+    removal_bg_threshold: float | None = None
+    # カメラ設定
+    camera_flip_h: bool | None = None
+    camera_flip_v: bool | None = None
+    camera_autofocus: bool | None = None
+    camera_focus_value: int | None = None
+    camera_auto_exposure: bool | None = None
+    camera_exposure_value: int | None = None
 
 
 @router.put("/products/{product_id}/config")
@@ -838,10 +933,17 @@ async def get_counters(product_id: str):
     if status.get("product_id") == product_id and status.get("active"):
         return state_machine.get_counters()
     # アクティブでない場合はファイルから読み込み
+    p = product_manager.get(product_id)
+    ppb = p.inspection_config.get("pieces_per_box", 0) if p else 0
     counter_file = product_manager.counter_file(product_id)
     if os.path.exists(counter_file):
         with open(counter_file, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+        if ppb > 0:
+            data["pieces_per_box"] = ppb
+            data["completed_boxes"] = data.get("ok", 0) // ppb
+            data["current_box_progress"] = data.get("ok", 0) % ppb
+        return data
     return {"total": 0, "ok": 0, "ng": 0}
 
 
@@ -858,6 +960,40 @@ async def reset_counters(product_id: str):
         with open(counter_file, "w") as f:
             json.dump({"total": 0, "ok": 0, "ng": 0}, f)
     return {"message": "カウンターをリセットしました", "total": 0, "ok": 0, "ng": 0}
+
+
+class CounterUpdate(BaseModel):
+    total: int | None = None
+    ok: int | None = None
+    ng: int | None = None
+
+
+@router.put("/products/{product_id}/counters")
+async def set_counters(product_id: str, data: CounterUpdate):
+    from backend.state_machine import state_machine
+    from backend.routes.ws import get_inspection_status
+    status = get_inspection_status()
+
+    # 現在の値をベースに更新
+    if status.get("product_id") == product_id and status.get("active"):
+        if data.total is not None: state_machine.count_total = data.total
+        if data.ok is not None: state_machine.count_ok = data.ok
+        if data.ng is not None: state_machine.count_ng = data.ng
+        state_machine._save_counters()
+        return state_machine.get_counters()
+    else:
+        counter_file = product_manager.counter_file(product_id)
+        current = {"total": 0, "ok": 0, "ng": 0}
+        if os.path.exists(counter_file):
+            with open(counter_file, "r") as f:
+                current = json.load(f)
+        if data.total is not None: current["total"] = data.total
+        if data.ok is not None: current["ok"] = data.ok
+        if data.ng is not None: current["ng"] = data.ng
+        os.makedirs(os.path.dirname(counter_file), exist_ok=True)
+        with open(counter_file, "w") as f:
+            json.dump(current, f)
+        return current
 
 
 # ─── フォルダをExplorerで開く ─────────────────────────────

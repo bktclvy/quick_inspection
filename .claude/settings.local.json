@@ -11,7 +11,28 @@
       "Bash(python3:*)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(wc:*)",
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(rm -f src/App.css src/index.css src/App.tsx src/main.tsx)",
+      "Bash(rm -rf src/assets)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(npx --prefix C:/Users/bktcl/quick_inspection/frontend vite build)",
+      "Bash(echo \"TSC: $?\")",
+      "Bash(echo \"BUILD: $?\")",
+      "Bash(npm run:*)",
+      "Bash(npx shadcn@latest init --defaults --yes)",
+      "Bash(npx shadcn@latest add card badge select input separator tabs --yes)",
+      "Bash(npx shadcn@latest add tabs dropdown-menu toggle-group tooltip --yes)",
+      "Bash(taskkill:*)",
+      "Bash(wmic process:*)",
+      "Bash(ls -la frontend/src/components/setup*)",
+      "Bash(grep -n \"apiFetch<\\\\|api<\" frontend/src/api/*.ts)",
+      "Bash(grep -A5 \"handleStateUpdate\\\\|handleWSMessage\" frontend/src/stores/*.ts)",
+      "Bash(grep -n \"inputStyle\\\\|selectStyle\\\\|checkboxStyle\" frontend/src/components/steps/*.tsx)",
+      "Bash(grep:*)"
     ]
   }
 }

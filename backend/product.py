@@ -6,9 +6,27 @@ import time
 import threading
 import numpy as np
 import cv2
+import send2trash
 import config
 
 ROI_COLORS = ["#2563eb", "#e11d48", "#16a34a", "#d97706", "#7c3aed", "#0891b2"]
+
+# 照明変化耐性のためのヒストグラム均一化
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+def _normalize_gray(gray: np.ndarray) -> np.ndarray:
+    """CLAHE適用で明るさ・コントラストを正規化。"""
+    return _clahe.apply(gray)
+
+
+def _safe_delete(path: str, base_dir: str):
+    """base_dir 配下のパスのみ削除を許可。ゴミ箱に送る。"""
+    abs_path = os.path.abspath(path)
+    abs_base = os.path.abspath(base_dir)
+    if not abs_path.startswith(abs_base + os.sep):
+        raise ValueError(f"安全でないパスの削除を拒否: {abs_path}")
+    if os.path.exists(abs_path):
+        send2trash.send2trash(abs_path)
 
 
 class ROIDefinition:
@@ -253,8 +271,7 @@ class ProductManager:
             del self._products[product_id]
             self._templates.pop(product_id, None)
             pdir = self._product_dir(product_id)
-            if os.path.isdir(pdir):
-                shutil.rmtree(pdir)
+            _safe_delete(pdir, self._dir)
             return True
 
     # ── ROI CRUD（製品内）────────────────────────────────
@@ -340,7 +357,7 @@ class ProductManager:
             crop = roi.crop_frame(frame)
             if crop.size == 0:
                 return False
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            gray = _normalize_gray(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
 
             # メモリに追加
             self._templates.setdefault(product_id, {})
@@ -364,9 +381,7 @@ class ProductManager:
             tpls.pop(index)
             # ディスク上のファイルを全部書き直し
             roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
-            if os.path.isdir(roi_tpl_dir):
-                import shutil
-                shutil.rmtree(roi_tpl_dir)
+            _safe_delete(roi_tpl_dir, self._dir)
             os.makedirs(roi_tpl_dir, exist_ok=True)
             for i, img in enumerate(tpls):
                 cv2.imwrite(os.path.join(roi_tpl_dir, f"{i + 1:03d}.jpg"), img)
@@ -405,7 +420,7 @@ class ProductManager:
         crop = roi.crop_frame(frame)
         if crop.size == 0:
             return None
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
 
         best = 0.0
         for template in templates:
@@ -441,7 +456,7 @@ class ProductManager:
         if search_region.size == 0:
             return None
 
-        gray = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY))
         gh, gw = gray.shape[:2]
 
         best = 0.0
@@ -510,7 +525,7 @@ class ProductManager:
             else:
                 return False
 
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            gray = _normalize_gray(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
 
             self._trigger_templates.setdefault(product_id, [])
             self._trigger_templates[product_id].append(gray)
@@ -531,9 +546,7 @@ class ProductManager:
                 return False
             tpls.pop(index)
             tdir = self._trigger_tpl_dir(product_id)
-            if os.path.isdir(tdir):
-                import shutil
-                shutil.rmtree(tdir)
+            _safe_delete(tdir, self._dir)
             os.makedirs(tdir, exist_ok=True)
             for i, img in enumerate(tpls):
                 cv2.imwrite(os.path.join(tdir, f"{i + 1:03d}.jpg"), img)
@@ -587,7 +600,7 @@ class ProductManager:
         if search.size == 0:
             return None
 
-        gray = cv2.cvtColor(search, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(search, cv2.COLOR_BGR2GRAY))
         gh, gw = gray.shape[:2]
 
         best = 0.0
@@ -619,7 +632,7 @@ class ProductManager:
         """現在のフレームを背景参照画像として保存する。"""
         if product_id not in self._products:
             return False
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         bg_path = self.background_path(product_id)
         os.makedirs(os.path.dirname(bg_path), exist_ok=True)
         cv2.imwrite(bg_path, gray)
@@ -637,7 +650,7 @@ class ProductManager:
         bg = self._backgrounds.get(product_id)
         if bg is None:
             return None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         if gray.shape != bg.shape:
             gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
         diff = cv2.absdiff(gray, bg)
@@ -649,7 +662,7 @@ class ProductManager:
         bg = self._backgrounds.get(product_id)
         if bg is None:
             return None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = _normalize_gray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         if gray.shape != bg.shape:
             gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
         result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)

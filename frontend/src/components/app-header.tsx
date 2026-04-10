@@ -106,8 +106,8 @@ export function AppHeader() {
       {/* ── Spacer ── */}
       <div style={{ flex: 1 }} />
 
-      {/* ── Product Selector ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* ── Product Selector (inspection page only) ── */}
+      <div style={{ display: page === 'setup' ? 'none' : 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
           fontSize: 11, fontWeight: 700, color: '#b0a9bc',
           textTransform: 'uppercase', letterSpacing: '0.06em',

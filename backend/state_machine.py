@@ -19,6 +19,7 @@ class InspectionState(str, Enum):
     INSPECTING = "inspecting"     # モデル推論中
     JUDGED = "judged"             # 判定結果表示中
     WAITING_REMOVAL = "waiting_removal"  # 取出し待ち
+    WAITING_CONFIRM = "waiting_confirm"  # 確認待ち（NG or 箱完成）
 
 
 class InspectionStateMachine:
@@ -37,9 +38,15 @@ class InspectionStateMachine:
         # 表示
         self.judged_display_ms: int = config.JUDGED_DISPLAY_MS
 
+        # 箱管理
+        self.pieces_per_box: int = 0  # 0 = 箱管理なし
+
         # 安定検知（設置後、手が退くのを待つ）
         self.stability_threshold: float = config.STABILITY_THRESHOLD
         self.stability_frames: int = config.STABILITY_FRAMES
+
+        # 確認待ち理由
+        self._confirm_reason: str = ""    # "ng" or "box_complete"
 
         # 内部カウンタ
         self._trigger_count: int = 0      # 設置検知用連続マッチ数
@@ -61,8 +68,8 @@ class InspectionStateMachine:
     def setup_product(self, inspection_config: dict, counter_file: str):
         self.reset()
         for key in ("match_threshold", "trigger_frames", "removal_diff_threshold",
-                     "removal_frames", "judged_display_ms", "match_margin",
-                     "stability_threshold", "stability_frames",
+                     "removal_frames", "removal_bg_threshold", "judged_display_ms", "match_margin",
+                     "stability_threshold", "stability_frames", "pieces_per_box",
                      # 旧パラメータも受け付ける（互換性）
                      "presence_threshold", "removal_threshold", "trigger_mode"):
             if key in inspection_config:
@@ -205,14 +212,35 @@ class InspectionStateMachine:
 
             removal_done = self._removal_count >= self.removal_frames
 
-            # 取出し確認 → 即IDLE（表示時間に関係なく）
+            # 取出し確認 → IDLEまたは確認待ち
             if removal_done:
-                self.state = InspectionState.IDLE
-                self._trigger_count = 0
-                self._removal_count = 0
-                self._stability_count = 0
-                return {"state": "idle", "trigger_mode": "auto",
-                        "counters": counters, **diag}
+                need_confirm = False
+                reason = ""
+                # NG判定 → 確認待ち
+                if self.last_judgment and self.last_judgment.get("overall_judgment") == "NG":
+                    need_confirm = True
+                    reason = "ng"
+                # 箱完成 → 確認待ち
+                elif self.pieces_per_box > 0 and self.count_ok > 0 and self.count_ok % self.pieces_per_box == 0:
+                    need_confirm = True
+                    reason = "box_complete"
+
+                if need_confirm:
+                    self.state = InspectionState.WAITING_CONFIRM
+                    self._confirm_reason = reason
+                    self._removal_count = 0
+                    result = {"state": "waiting_confirm", "trigger_mode": "auto",
+                              "counters": counters, "confirm_reason": reason, **diag}
+                    if self.last_judgment:
+                        result.update(self.last_judgment)
+                    return result
+                else:
+                    self.state = InspectionState.IDLE
+                    self._trigger_count = 0
+                    self._removal_count = 0
+                    self._stability_count = 0
+                    return {"state": "idle", "trigger_mode": "auto",
+                            "counters": counters, **diag}
 
             # 表示完了だが取出し未確認 → WAITING_REMOVAL
             if display_done:
@@ -233,12 +261,31 @@ class InspectionStateMachine:
                 self._removal_count = 0
 
             if self._removal_count >= self.removal_frames:
-                self.state = InspectionState.IDLE
-                self._trigger_count = 0
-                self._removal_count = 0
-                self._stability_count = 0
-                return {"state": "idle", "trigger_mode": "auto",
-                        "counters": counters, **diag}
+                need_confirm = False
+                reason = ""
+                if self.last_judgment and self.last_judgment.get("overall_judgment") == "NG":
+                    need_confirm = True
+                    reason = "ng"
+                elif self.pieces_per_box > 0 and self.count_ok > 0 and self.count_ok % self.pieces_per_box == 0:
+                    need_confirm = True
+                    reason = "box_complete"
+
+                if need_confirm:
+                    self.state = InspectionState.WAITING_CONFIRM
+                    self._confirm_reason = reason
+                    self._removal_count = 0
+                    result = {"state": "waiting_confirm", "trigger_mode": "auto",
+                              "counters": counters, "confirm_reason": reason, **diag}
+                    if self.last_judgment:
+                        result.update(self.last_judgment)
+                    return result
+                else:
+                    self.state = InspectionState.IDLE
+                    self._trigger_count = 0
+                    self._removal_count = 0
+                    self._stability_count = 0
+                    return {"state": "idle", "trigger_mode": "auto",
+                            "counters": counters, **diag}
 
             result = {"state": "waiting_removal", "trigger_mode": "auto",
                       "counters": counters, **diag,
@@ -248,7 +295,24 @@ class InspectionStateMachine:
                 result["overall_judgment"] = self.last_judgment.get("overall_judgment")
             return result
 
+        # ── WAITING_CONFIRM: ユーザー確認待ち ─────────────
+        if self.state == InspectionState.WAITING_CONFIRM:
+            result = {"state": "waiting_confirm", "trigger_mode": "auto",
+                      "counters": counters, "confirm_reason": self._confirm_reason, **diag}
+            if self.last_judgment:
+                result.update(self.last_judgment)
+            return result
+
         return {"state": "idle", "trigger_mode": "auto", "counters": counters, **diag}
+
+    def confirm(self) -> dict:
+        """ユーザーが確認ボタンを押した。IDLEに戻す。"""
+        self.state = InspectionState.IDLE
+        self._trigger_count = 0
+        self._removal_count = 0
+        self._stability_count = 0
+        self._confirm_reason = ""
+        return {"state": "idle", "trigger_mode": "auto", "counters": self.get_counters()}
 
     # ── 旧APIとの互換 ────────────────────────────────────
 
@@ -310,7 +374,12 @@ class InspectionStateMachine:
             pass
 
     def get_counters(self) -> dict:
-        return {"total": self.count_total, "ok": self.count_ok, "ng": self.count_ng}
+        result = {"total": self.count_total, "ok": self.count_ok, "ng": self.count_ng}
+        if self.pieces_per_box > 0:
+            result["pieces_per_box"] = self.pieces_per_box
+            result["completed_boxes"] = self.count_ok // self.pieces_per_box
+            result["current_box_progress"] = self.count_ok % self.pieces_per_box
+        return result
 
     def reset_counters(self):
         self.count_total = self.count_ok = self.count_ng = 0

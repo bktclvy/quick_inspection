@@ -27,6 +27,14 @@ class CameraManager:
         self._width = config.CAMERA_WIDTH
         self._height = config.CAMERA_HEIGHT
         self._rotation = cv2.ROTATE_180
+        self._flip_h: bool = False
+        self._flip_v: bool = False
+        # フレームキャッシュ（ストリームとWSループで共有）
+        self._latest_frame: np.ndarray | None = None
+        self._frame_id: int = 0
+        # フリーズフレーム（検査結果表示中はこのフレームをストリームに使う）
+        self._frozen_frame: np.ndarray | None = None
+        self._frozen: bool = False
         self._initialized = True
 
     def open(self, index=None):
@@ -53,6 +61,7 @@ class CameraManager:
             return self._cap is not None and self._cap.isOpened()
 
     def read_frame(self):
+        """カメラから新しいフレームを読み取り、キャッシュも更新する。"""
         with self._frame_lock:
             if self._cap is None or not self._cap.isOpened():
                 return None
@@ -61,7 +70,33 @@ class CameraManager:
                 return None
             if self._rotation is not None:
                 frame = cv2.rotate(frame, self._rotation)
+            if self._flip_h:
+                frame = cv2.flip(frame, 1)
+            if self._flip_v:
+                frame = cv2.flip(frame, 0)
+            self._latest_frame = frame
+            self._frame_id += 1
             return frame
+
+    def get_latest_frame(self) -> tuple[np.ndarray | None, int]:
+        """キャッシュ済みの最新フレームとIDを返す（カメラ読み取りなし）。"""
+        return self._latest_frame, self._frame_id
+
+    def freeze_frame(self, frame: np.ndarray | None = None):
+        """現在のフレーム（または指定フレーム）をフリーズ。ストリームにこのフレームを返し続ける。"""
+        self._frozen_frame = frame if frame is not None else self._latest_frame
+        self._frozen = True
+
+    def unfreeze_frame(self):
+        """フリーズを解除。ストリームがライブに戻る。"""
+        self._frozen = False
+        self._frozen_frame = None
+
+    def get_stream_frame(self) -> np.ndarray | None:
+        """ストリーム配信用のフレームを返す。フリーズ中は検査時のフレーム。"""
+        if self._frozen and self._frozen_frame is not None:
+            return self._frozen_frame
+        return self._latest_frame
 
     def get_jpeg_bytes(self, quality=None):
         frame = self.read_frame()
@@ -81,6 +116,49 @@ class CameraManager:
                 "width": int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": round(self._cap.get(cv2.CAP_PROP_FPS), 1),
+            }
+
+    def set_flip(self, horizontal: bool = False, vertical: bool = False):
+        """映像の反転設定。"""
+        self._flip_h = horizontal
+        self._flip_v = vertical
+
+    def set_autofocus(self, enabled: bool, focus_value: int | None = None):
+        """オートフォーカスの制御。enabled=Falseで固定フォーカス。"""
+        with self._frame_lock:
+            if self._cap is None or not self._cap.isOpened():
+                return
+            if enabled:
+                self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            else:
+                self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                if focus_value is not None:
+                    self._cap.set(cv2.CAP_PROP_FOCUS, focus_value)
+
+    def set_exposure(self, auto: bool, value: int | None = None):
+        """露出制御。"""
+        with self._frame_lock:
+            if self._cap is None or not self._cap.isOpened():
+                return
+            if auto:
+                self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)  # auto
+            else:
+                self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # manual
+                if value is not None:
+                    self._cap.set(cv2.CAP_PROP_EXPOSURE, value)
+
+    def get_camera_properties(self) -> dict:
+        """現在のカメラプロパティを取得。"""
+        with self._frame_lock:
+            if self._cap is None or not self._cap.isOpened():
+                return {}
+            return {
+                "autofocus": int(self._cap.get(cv2.CAP_PROP_AUTOFOCUS)),
+                "focus": int(self._cap.get(cv2.CAP_PROP_FOCUS)),
+                "auto_exposure": int(self._cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)),
+                "exposure": int(self._cap.get(cv2.CAP_PROP_EXPOSURE)),
+                "flip_h": self._flip_h,
+                "flip_v": self._flip_v,
             }
 
     def list_cameras(self, max_check=5):

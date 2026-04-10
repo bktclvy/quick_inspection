@@ -10,7 +10,11 @@ import { useKeyboard } from '@/hooks/useKeyboard'
 import { Toast } from '@/components/layout/Toast'
 import type { ROIResult } from '@/types'
 
-export function AssignStepNew() {
+interface Props {
+  onTestResults?: (results: ROIResult[]) => void
+}
+
+export function AssignStepNew({ onTestResults }: Props) {
   const rois = useAppStore((s) => s.rois)
   const productId = useAppStore((s) => s.selectedProductId)
   const refreshROIs = useAppStore((s) => s.refreshROIs)
@@ -33,7 +37,9 @@ export function AssignStepNew() {
     if (!productId) return
     try {
       const result = await productsApi.predictOnce(productId) as { results: ROIResult[] }
-      setTestResults(result.results || [])
+      const results = result.results || []
+      setTestResults(results)
+      onTestResults?.(results)
       Toast.success('テスト完了')
     } catch { Toast.error('テストに失敗しました') }
   }, [productId])

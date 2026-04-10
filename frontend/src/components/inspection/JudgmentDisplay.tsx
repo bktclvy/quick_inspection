@@ -8,6 +8,7 @@ const STATE_LABELS: Record<InspectionState, string> = {
   inspecting: '検査中',
   judged: '判定',
   waiting_removal: '取出し待ち',
+  waiting_confirm: '確認待ち',
 }
 
 function resolveVisualState(currentState: InspectionState, judgment: 'OK' | 'NG' | null): string {

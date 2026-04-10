@@ -16,18 +16,18 @@ import { productsApi } from '@/api/products'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { ROICanvas } from '@/components/camera/ROICanvas'
 import { Toast } from '@/components/layout/Toast'
+import { BasicSettingsStep } from '@/components/steps/basic-settings-step'
 import { TriggerStep } from '@/components/steps/trigger-step'
 import { api } from '@/api/client'
 import { ROIStep } from '@/components/steps/roi-step'
-import { TemplateStepNew } from '@/components/steps/template-step'
 import { DatasetStepNew } from '@/components/steps/dataset-step'
 import { TrainingStepNew } from '@/components/steps/training-step'
 import { AssignStepNew } from '@/components/steps/assign-step'
 
 const STEPS = [
+  { label: '基本設定',     desc: '製品の基本パラメータを設定' },
   { label: 'トリガー',     desc: '製品検知の領域とテンプレートを設定' },
   { label: 'ROI設定',     desc: '検査領域を定義' },
-  { label: 'テンプレート', desc: 'ROI基準画像を撮影' },
   { label: 'データ収集',   desc: 'OK/NG画像を収集' },
   { label: '学習',         desc: 'モデルを訓練' },
   { label: 'モデル割当',   desc: 'ROIにモデルを紐付け' },
@@ -41,10 +41,15 @@ export function SetupWizard({ productName }: Props) {
   const [step, setStep] = useState(0)
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
   const [editMode, setEditMode] = useState(false)
-
   // Trigger drawing state
   type TriggerDrawMode = 'search' | 'template' | null
   const [triggerDrawMode, setTriggerDrawMode] = useState<TriggerDrawMode>(null)
+
+  // Test results for ROI overlay coloring
+  const [testResults, setTestResults] = useState<Array<{ roi_id: string; judgment: string }>>([])
+  // Clear results when leaving assign step
+  const prevStep = useRef(step)
+  useEffect(() => { if (prevStep.current !== step) setTestResults([]); prevStep.current = step }, [step])
 
   const rois = useAppStore((s) => s.rois)
   const productId = useAppStore((s) => s.selectedProductId)
@@ -80,7 +85,7 @@ export function SetupWizard({ productName }: Props) {
     } catch { Toast.error('失敗しました') }
   }, [productId, triggerDrawMode, refreshROIs])
 
-  const showCamera = step !== 4  // 学習ステップではカメラ非表示
+  const showCamera = step !== 4  // 学習ステップのみカメラ非表示
   const canGoNext = step < STEPS.length - 1
   const canGoBack = step > 0
 
@@ -191,16 +196,8 @@ export function SetupWizard({ productName }: Props) {
               boxShadow: '0 4px 24px rgba(0,0,0,0.12)',
             }}>
               <CameraFeed onImgRef={setImgEl} />
-              {/* ROI overlay (only on ROI step) */}
-              {step === 1 && <ROICanvas imgEl={imgEl} rois={rois}
-                editMode={editMode}
-                onDrawComplete={handleDraw}
-                onROIUpdate={handleROIUpdate}
-                onEditModeExit={() => setEditMode(false)} />}
-              {/* ROI overlay readonly (other steps) */}
-              {step !== 0 && step !== 1 && <ROICanvas imgEl={imgEl} rois={rois} readOnly />}
-              {/* Trigger region drawing canvas */}
-              <TriggerCanvas
+              {/* Trigger canvas (step 0 only) */}
+              {step === 1 && <TriggerCanvas
                 imgEl={imgEl}
                 drawing={triggerDrawMode !== null}
                 drawMode={triggerDrawMode}
@@ -210,7 +207,16 @@ export function SetupWizard({ productName }: Props) {
                   handleTriggerDrawComplete(rect)
                   setTriggerDrawMode(null)
                 }}
-              />
+              />}
+              {/* ROI overlay editable (ROI step) */}
+              {step === 2 && <ROICanvas imgEl={imgEl} rois={rois}
+                editMode={editMode}
+                onDrawComplete={handleDraw}
+                onROIUpdate={handleROIUpdate}
+                onEditModeExit={() => setEditMode(false)} />}
+              {/* ROI overlay readonly (other steps except trigger) */}
+              {step >= 3 && <ROICanvas imgEl={imgEl} rois={rois} readOnly
+                results={step === 5 ? testResults : undefined} />}
             </div>
           </div>
         )}
@@ -234,14 +240,14 @@ export function SetupWizard({ productName }: Props) {
           </div>
 
           {/* Step-specific content */}
-          {step === 0 && <TriggerStep imgEl={imgEl}
+          {step === 0 && <BasicSettingsStep />}
+          {step === 1 && <TriggerStep imgEl={imgEl}
             onStartDrawing={(mode) => setTriggerDrawMode(mode)}
             drawMode={triggerDrawMode} />}
-          {step === 1 && <ROIStep editMode={editMode} onToggleEdit={() => setEditMode((m) => !m)} />}
-          {step === 2 && <TemplateStepNew />}
+          {step === 2 && <ROIStep editMode={editMode} onToggleEdit={() => setEditMode((m) => !m)} />}
           {step === 3 && <DatasetStepNew />}
           {step === 4 && <TrainingStepNew />}
-          {step === 5 && <AssignStepNew />}
+          {step === 5 && <AssignStepNew onTestResults={(r) => setTestResults(r.map((x) => ({ roi_id: x.roi_id, judgment: x.judgment })))} />}
         </div>
       </div>
 

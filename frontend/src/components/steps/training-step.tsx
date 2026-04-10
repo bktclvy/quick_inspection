@@ -34,13 +34,25 @@ export function TrainingStepNew() {
 
   const [name, setName] = useState('model_v1')
   const [roiId, setRoiId] = useState<string | null>(null)
+
+  // ROI選択時にモデル名を自動設定
+  const handleRoiChange = (id: string | null) => {
+    setRoiId(id)
+    if (id) {
+      const roi = rois.find((r) => r.id === id)
+      if (roi) setName(roi.name)
+    } else {
+      setName('model_v1')
+    }
+  }
   const [epochs, setEpochs] = useState(20)
   const [lr, setLr] = useState(0.001)
   const [bs, setBs] = useState(32)
   const [vs, setVs] = useState(0.2)
   const [imgSize, setImgSize] = useState(224)
   const [freeze, setFreeze] = useState(true)
-  const [showAug, setShowAug] = useState(false)
+  const [earlyStop, setEarlyStop] = useState(5)  // 0=無効
+  const [augEnabled, setAugEnabled] = useState(true)
   const [aug, setAug] = useState<AugmentationConfig>({
     horizontal_flip: true, vertical_flip: false,
     rotation: 0.1, zoom: 0.1, brightness: 0.1, contrast: 0.1,
@@ -51,13 +63,13 @@ export function TrainingStepNew() {
 
   const start = async () => {
     if (!productId) return; resetCharts()
-    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: aug }) }
+    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop } as Record<string, unknown>) }
     catch (e) { Toast.error(`学習開始に失敗: ${e}`) }
   }
 
   const startBatch = async () => {
     if (!productId) return; resetCharts()
-    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: aug }) }
+    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop } as Record<string, unknown>) }
     catch (e) { Toast.error(`一括学習に失敗: ${e}`) }
   }
 
@@ -88,7 +100,7 @@ export function TrainingStepNew() {
         <Panel title="学習パラメータ">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Field label="対象ROI">
-              <select value={roiId ?? ''} onChange={(e) => setRoiId(e.target.value || null)} style={selStyle}>
+              <select value={roiId ?? ''} onChange={(e) => handleRoiChange(e.target.value || null)} style={selStyle}>
                 <option value="">全体</option>
                 {rois.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
@@ -126,15 +138,27 @@ export function TrainingStepNew() {
             </div>
 
             {/* Augmentation toggle */}
-            <button onClick={() => setShowAug(!showAug)} style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              fontSize: 12, fontWeight: 600, color: '#9994a8', textAlign: 'left',
-              fontFamily: "'DM Sans', system-ui, sans-serif", padding: 0,
-            }}>
-              データ拡張 {showAug ? '▲' : '▼'}
-            </button>
+            {/* Early stopping */}
+            <Field label="アーリーストップ (patience)">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" min={0} max={50} value={earlyStop}
+                  onChange={(e) => setEarlyStop(+e.target.value)} style={{ ...inpStyle, width: 80 }} />
+                <span style={{ fontSize: 11, color: '#9994a8' }}>
+                  {earlyStop > 0 ? `${earlyStop}エポック改善なしで停止` : '無効'}
+                </span>
+              </div>
+            </Field>
 
-            {showAug && (
+            {/* Data augmentation */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: '#3d3654', cursor: 'pointer' }}>
+                <input type="checkbox" checked={augEnabled} onChange={(e) => setAugEnabled(e.target.checked)}
+                  style={{ width: 15, height: 15, accentColor: '#6366f1' }} />
+                データ拡張
+              </label>
+            </div>
+
+            {augEnabled && (
               <div style={{ background: '#faf9f7', borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label style={checkStyle}><input type="checkbox" checked={aug.horizontal_flip} onChange={(e) => setAug({ ...aug, horizontal_flip: e.target.checked })} style={cbStyle} /> 水平反転</label>
                 <label style={checkStyle}><input type="checkbox" checked={aug.vertical_flip} onChange={(e) => setAug({ ...aug, vertical_flip: e.target.checked })} style={cbStyle} /> 垂直反転</label>

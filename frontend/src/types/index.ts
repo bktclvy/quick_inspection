@@ -75,6 +75,9 @@ export interface Counters {
   total: number
   ok: number
   ng: number
+  pieces_per_box?: number
+  completed_boxes?: number
+  current_box_progress?: number
 }
 
 /* ── Dataset ──────────────────────────────────────── */

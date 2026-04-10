@@ -35,7 +35,7 @@ export function DatasetStepNew() {
     try {
       const files = await datasetApi.listImages(productId, cls, roiId)
       setThumbs(files.slice(-12).reverse().map((f) => ({
-        cls, file: f, url: datasetApi.imageUrl(productId, cls, f),
+        cls, file: f, url: datasetApi.imageUrl(productId, cls, f, roiId),
       })))
     } catch {}
   }, [productId, roiId])

@@ -25,8 +25,8 @@ export const datasetApi = {
   deleteImage: (productId: string, body: DeleteImageReq) =>
     api(`/products/${productId}/dataset/delete-image`).post(body),
 
-  imageUrl: (productId: string, className: string, filename: string) =>
-    `/api/products/${productId}/dataset/file/${className}/${filename}`,
+  imageUrl: (productId: string, className: string, filename: string, roiId?: string | null) =>
+    `/api/products/${productId}/dataset/file/${className}/${filename}${roiId ? `?roi_id=${roiId}` : ''}`,
 
   importFolder: (productId: string, roiId?: string | null) =>
     api(`/products/${productId}/dataset/import-folder`).post(

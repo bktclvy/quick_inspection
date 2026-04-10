@@ -33,12 +33,19 @@ interface DragState {
 
 /* ── Props ────────────────────────────────────────── */
 
+export interface ROIResult {
+  roi_id: string
+  judgment: string  // 'ok' | 'ng' | 'OK' | 'NG'
+}
+
 export interface ROICanvasProps {
   /** The MJPEG <img> element to overlay on */
   imgEl: HTMLImageElement | null
   rois: ROI[]
   readOnly?: boolean
   editMode?: boolean
+  /** Test/inspection results — colors ROI borders green/red */
+  results?: ROIResult[]
   /** Called when a new ROI is drawn. Parent should prompt for name and call API. */
   onDrawComplete?: (rect: { x: number; y: number; w: number; h: number }) => void
   /** Called after a ROI is moved or resized. Parent should call API to save. */
@@ -54,6 +61,7 @@ export function ROICanvas({
   rois,
   readOnly = false,
   editMode = false,
+  results,
   onDrawComplete,
   onROIUpdate,
   onEditModeExit,
@@ -67,6 +75,8 @@ export function ROICanvas({
   // Local copy of rois for drag operations (we mutate positions during drag)
   const roisRef = useRef<ROI[]>([])
   roisRef.current = rois
+  const resultsRef = useRef<ROIResult[] | undefined>(undefined)
+  resultsRef.current = results
 
   /* ── Resize canvas to match img ──────────────── */
 
@@ -104,17 +114,30 @@ export function ROICanvas({
       const isHovered = hoveredRef.current.roiId === roi.id
       const x = roi.x * cw, y = roi.y * ch
       const w = roi.w * cw, h = roi.h * ch
-      const color = roi.color || '#1d4ed8'
+
+      // 判定結果がある場合は色を変える
+      const result = resultsRef.current?.find((r) => r.roi_id === roi.id)
+      const color = result
+        ? (result.judgment.toLowerCase() === 'ok' ? '#10b981' : '#ef4444')
+        : (roi.color || '#1d4ed8')
 
       ctx.save()
 
       // Rectangle
       ctx.strokeStyle = color
-      ctx.lineWidth = 2
+      ctx.lineWidth = result ? 3 : 2
       ctx.strokeRect(x, y, w, h)
 
+      // Result fill (OK=green tint, NG=red tint) — no text, just border + fill
+      if (result) {
+        ctx.fillStyle = color
+        ctx.globalAlpha = 0.15
+        ctx.fillRect(x, y, w, h)
+        ctx.globalAlpha = 1
+      }
+
       // Hover fill
-      if (isHovered && !editMode) {
+      if (isHovered && !editMode && !result) {
         ctx.fillStyle = color
         ctx.globalAlpha = 0.08
         ctx.fillRect(x, y, w, h)
@@ -156,7 +179,7 @@ export function ROICanvas({
 
       ctx.restore()
     }
-  }, [readOnly, editMode])
+  }, [readOnly, editMode, results])
 
   /* ── Hit testing ────────────────────────────── */
 

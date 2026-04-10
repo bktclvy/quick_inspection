@@ -20,8 +20,9 @@ export interface InspectionStateUpdate {
   stability_required?: number
   needs_background?: boolean
 
-  // judged / waiting_removal
+  // judged / waiting_removal / waiting_confirm
   overall_judgment?: 'OK' | 'NG'
+  confirm_reason?: 'ng' | 'box_complete'
   overall_confidence?: number
   roi_results?: ROIResult[]
   remaining_ms?: number
@@ -33,6 +34,7 @@ export type InspectionState =
   | 'inspecting'
   | 'judged'
   | 'waiting_removal'
+  | 'waiting_confirm'
 
 /* ── Training WebSocket ───────────────────────────── */
 

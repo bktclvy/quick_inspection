@@ -351,7 +351,7 @@ function HistoryPanel({ entries }: { entries: HistoryEntry[] }) {
 
 const LABELS: Record<InspectionState, string> = {
   idle: '待機中', detecting: '検知中', inspecting: '推論中',
-  judged: '判定完了', waiting_removal: '取出し待ち',
+  judged: '判定完了', waiting_removal: '取出し待ち', waiting_confirm: '確認待ち',
 }
 
 function visualState(s: InspectionState, j: 'OK' | 'NG' | null): VS {

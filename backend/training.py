@@ -368,13 +368,26 @@ class Trainer:
                     }
                     trainer_ref._broadcast(data)
 
+            # コールバック
+            cb_list = [ProgressCallback()]
+
+            # アーリーストップ
+            early_stop_patience = params.get("early_stop_patience", 0)
+            if early_stop_patience > 0:
+                cb_list.append(tf.keras.callbacks.EarlyStopping(
+                    monitor="val_loss",
+                    patience=early_stop_patience,
+                    restore_best_weights=True,
+                    verbose=0,
+                ))
+
             # 学習実行
             start_time = time.time()
             history = model.fit(
                 train_ds,
                 validation_data=val_ds,
                 epochs=epochs,
-                callbacks=[ProgressCallback()],
+                callbacks=cb_list,
                 verbose=0,
             )
             elapsed = time.time() - start_time

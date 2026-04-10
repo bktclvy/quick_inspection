@@ -21,8 +21,11 @@ export const productsApi = {
     api(`/products/${productId}/rois/${roiId}/assign-model`).post({ model_name: modelName }),
   captureTemplate: (productId: string, roiId: string) =>
     api(`/products/${productId}/rois/${roiId}/capture-template`).post(),
-  templateUrl: (productId: string, roiId: string) =>
-    `/api/products/${productId}/rois/${roiId}/template`,
+  templateUrl: (productId: string, roiId: string, index = 0) =>
+    `/api/products/${productId}/rois/${roiId}/template?index=${index}`,
+
+  deleteTemplate: (productId: string, roiId: string, index: number) =>
+    api(`/products/${productId}/rois/${roiId}/template/${index}`).delete(),
 
   /* Config */
   getConfig: (id: string) => api<InspectionConfig>(`/products/${id}/config`).get(),

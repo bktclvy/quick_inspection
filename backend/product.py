@@ -43,23 +43,25 @@ class ROIDefinition:
 class Product:
     def __init__(self, id: str, name: str, description: str = "",
                  rois: list[ROIDefinition] | None = None,
+                 trigger_region: dict | None = None,
+                 trigger_search_region: dict | None = None,
                  inspection_config: dict | None = None,
-                 created_at: str = "", updated_at: str = ""):
+                 created_at: str = "", updated_at: str = "", **kwargs):
         self.id = id
         self.name = name
         self.description = description
         self.rois = rois or []
+        # トリガー領域
+        # trigger_region: テンプレート矩形（マッチ対象）
+        # trigger_search_region: 検索エリア（この中をスキャン）
+        self.trigger_region = trigger_region
+        self.trigger_search_region = trigger_search_region
         self.inspection_config = inspection_config or {
             "match_threshold": config.MATCH_THRESHOLD,
             "trigger_frames": config.TRIGGER_FRAMES,
-            "removal_threshold": config.REMOVAL_THRESHOLD,
-            "removal_frames": config.REMOVAL_FRAMES,
             "judged_display_ms": config.JUDGED_DISPLAY_MS,
-            "trigger_mode": config.DEFAULT_TRIGGER_MODE,
-            "presence_threshold": config.PRESENCE_THRESHOLD,
             "stability_threshold": config.STABILITY_THRESHOLD,
             "stability_frames": config.STABILITY_FRAMES,
-            "removal_diff_threshold": config.REMOVAL_DIFF_THRESHOLD,
         }
         self.created_at = created_at or time.strftime("%Y-%m-%d %H:%M:%S")
         self.updated_at = updated_at or self.created_at
@@ -68,6 +70,8 @@ class Product:
         return {
             "id": self.id, "name": self.name, "description": self.description,
             "rois": [r.to_dict() for r in self.rois],
+            "trigger_region": self.trigger_region,
+            "trigger_search_region": self.trigger_search_region,
             "inspection_config": self.inspection_config,
             "created_at": self.created_at, "updated_at": self.updated_at,
         }
@@ -76,7 +80,9 @@ class Product:
     def from_dict(cls, d: dict) -> "Product":
         rois = [ROIDefinition.from_dict(r) for r in d.get("rois", [])]
         return cls(id=d["id"], name=d["name"], description=d.get("description", ""),
-                   rois=rois, inspection_config=d.get("inspection_config"),
+                   rois=rois, trigger_region=d.get("trigger_region"),
+                   trigger_search_region=d.get("trigger_search_region"),
+                   inspection_config=d.get("inspection_config"),
                    created_at=d.get("created_at", ""), updated_at=d.get("updated_at", ""))
 
     def get_roi(self, roi_id: str) -> ROIDefinition | None:
@@ -85,14 +91,30 @@ class Product:
                 return r
         return None
 
+    def crop_trigger_region(self, frame: np.ndarray, margin: float = 0.0):
+        """トリガー領域をフレームからクロップ。marginで拡大可能。"""
+        if not self.trigger_region:
+            return None
+        tr = self.trigger_region
+        h, w = frame.shape[:2]
+        mx = tr["w"] * margin
+        my = tr["h"] * margin
+        x1 = max(0, int((tr["x"] - mx) * w))
+        y1 = max(0, int((tr["y"] - my) * h))
+        x2 = min(w, int((tr["x"] + tr["w"] + mx) * w))
+        y2 = min(h, int((tr["y"] + tr["h"] + my) * h))
+        crop = frame[y1:y2, x1:x2]
+        return crop if crop.size > 0 else None
+
 
 class ProductManager:
     def __init__(self, products_dir: str):
         self._dir = products_dir
         self._lock = threading.Lock()
         self._products: dict[str, Product] = {}
-        self._templates: dict[str, dict[str, np.ndarray]] = {}  # product_id -> {roi_id -> グレースケール画像}
-        self._backgrounds: dict[str, np.ndarray] = {}  # product_id -> グレースケール背景画像
+        self._templates: dict[str, dict[str, list[np.ndarray]]] = {}  # product_id -> {roi_id -> [画像リスト]}
+        self._trigger_templates: dict[str, list[np.ndarray]] = {}   # product_id -> [トリガーテンプレート]
+        self._backgrounds: dict[str, np.ndarray] = {}               # product_id -> グレースケール背景画像
         os.makedirs(self._dir, exist_ok=True)
         self._load_all()
 
@@ -131,21 +153,40 @@ class ProductManager:
                     p = Product.from_dict(data)
                     self._products[p.id] = p
                     self._load_templates(p.id)
+                    self._load_trigger_templates(p.id)
                     self._load_background(p.id)
                 except (json.JSONDecodeError, KeyError):
                     pass
 
     def _load_templates(self, product_id: str):
+        """テンプレートを読み込む。ROIごとにサブディレクトリまたは単一ファイル。
+        新形式: templates/{roi_id}/001.jpg, 002.jpg, ...
+        旧形式: templates/{roi_id}.jpg（互換用、リスト[1枚]として扱う）
+        """
         tpl_dir = self.templates_dir(product_id)
         if not os.path.isdir(tpl_dir):
             return
         self._templates.setdefault(product_id, {})
-        for f in os.listdir(tpl_dir):
-            if f.endswith(".jpg"):
-                roi_id = f[:-4]
-                img = cv2.imread(os.path.join(tpl_dir, f), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    self._templates[product_id][roi_id] = img
+        for entry in os.listdir(tpl_dir):
+            entry_path = os.path.join(tpl_dir, entry)
+            if os.path.isdir(entry_path):
+                # 新形式: ディレクトリ内の全JPG
+                roi_id = entry
+                imgs = []
+                for f in sorted(os.listdir(entry_path)):
+                    if f.endswith(".jpg"):
+                        img = cv2.imread(os.path.join(entry_path, f), cv2.IMREAD_GRAYSCALE)
+                        if img is not None:
+                            imgs.append(img)
+                if imgs:
+                    self._templates[product_id][roi_id] = imgs
+            elif entry.endswith(".jpg"):
+                # 旧形式: 単一ファイル → リスト化
+                roi_id = entry[:-4]
+                if roi_id not in self._templates.get(product_id, {}):
+                    img = cv2.imread(entry_path, cv2.IMREAD_GRAYSCALE)
+                    if img is not None:
+                        self._templates[product_id][roi_id] = [img]
 
     def _save_product(self, product: Product):
         pdir = self._product_dir(product.id)
@@ -172,10 +213,13 @@ class ProductManager:
         if not p:
             return None
         d = p.to_dict()
-        # ROIごとのテンプレート有無を付与
+        # ROIごとのテンプレート情報を付与
         tpls = self._templates.get(product_id, {})
         for roi in d["rois"]:
-            roi["has_template"] = roi["id"] in tpls
+            roi_tpls = tpls.get(roi["id"], [])
+            roi["has_template"] = len(roi_tpls) > 0
+            roi["template_count"] = len(roi_tpls)
+        d["trigger_template_count"] = self.get_trigger_template_count(product_id)
         return d
 
     def create(self, name: str, description: str = "") -> dict:
@@ -194,8 +238,8 @@ class ProductManager:
             p = self._products.get(product_id)
             if not p:
                 return None
-            for k in ("name", "description", "inspection_config"):
-                if k in kwargs and kwargs[k] is not None:
+            for k in ("name", "description", "inspection_config", "trigger_region", "trigger_search_region"):
+                if k in kwargs:
                     setattr(p, k, kwargs[k])
             p.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
             self._save_product(p)
@@ -285,7 +329,7 @@ class ProductManager:
     # ── テンプレート管理 ──────────────────────────────────
 
     def capture_template(self, product_id: str, roi_id: str, frame: np.ndarray) -> bool:
-        """現在のフレームからROIの基準画像を撮影する。"""
+        """現在のフレームからROIのテンプレートを追加登録する（複数登録可能）。"""
         with self._lock:
             p = self._products.get(product_id)
             if not p:
@@ -297,21 +341,60 @@ class ProductManager:
             if crop.size == 0:
                 return False
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            self._templates.setdefault(product_id, {})[roi_id] = gray
-            tpl_dir = self.templates_dir(product_id)
-            os.makedirs(tpl_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(tpl_dir, f"{roi_id}.jpg"), gray)
+
+            # メモリに追加
+            self._templates.setdefault(product_id, {})
+            if roi_id not in self._templates[product_id]:
+                self._templates[product_id][roi_id] = []
+            self._templates[product_id][roi_id].append(gray)
+
+            # ディスクに保存
+            roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+            os.makedirs(roi_tpl_dir, exist_ok=True)
+            idx = len(os.listdir(roi_tpl_dir)) + 1
+            cv2.imwrite(os.path.join(roi_tpl_dir, f"{idx:03d}.jpg"), gray)
             return True
 
-    def get_template_path(self, product_id: str, roi_id: str) -> str | None:
-        path = os.path.join(self.templates_dir(product_id), f"{roi_id}.jpg")
-        return path if os.path.exists(path) else None
+    def delete_template(self, product_id: str, roi_id: str, index: int) -> bool:
+        """指定インデックスのテンプレートを削除する。"""
+        with self._lock:
+            tpls = self._templates.get(product_id, {}).get(roi_id, [])
+            if index < 0 or index >= len(tpls):
+                return False
+            tpls.pop(index)
+            # ディスク上のファイルを全部書き直し
+            roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+            if os.path.isdir(roi_tpl_dir):
+                import shutil
+                shutil.rmtree(roi_tpl_dir)
+            os.makedirs(roi_tpl_dir, exist_ok=True)
+            for i, img in enumerate(tpls):
+                cv2.imwrite(os.path.join(roi_tpl_dir, f"{i + 1:03d}.jpg"), img)
+            return True
+
+    def get_template_count(self, product_id: str, roi_id: str) -> int:
+        """登録済みテンプレート数を返す。"""
+        return len(self._templates.get(product_id, {}).get(roi_id, []))
+
+    def get_template_path(self, product_id: str, roi_id: str, index: int = 0) -> str | None:
+        """テンプレート画像のパスを返す。indexで複数対応。"""
+        # 新形式
+        roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+        if os.path.isdir(roi_tpl_dir):
+            files = sorted(f for f in os.listdir(roi_tpl_dir) if f.endswith(".jpg"))
+            if 0 <= index < len(files):
+                return os.path.join(roi_tpl_dir, files[index])
+        # 旧形式
+        if index == 0:
+            old_path = os.path.join(self.templates_dir(product_id), f"{roi_id}.jpg")
+            if os.path.exists(old_path):
+                return old_path
+        return None
 
     def match_score(self, product_id: str, roi_id: str, frame: np.ndarray) -> float | None:
-        """ROIのテンプレートマッチスコアを算出する。0〜1またはテンプレート未登録ならNone。"""
-        tpls = self._templates.get(product_id, {})
-        template = tpls.get(roi_id)
-        if template is None:
+        """ROIのテンプレートマッチスコアを算出する。複数テンプレートの最大値。"""
+        templates = self._templates.get(product_id, {}).get(roi_id, [])
+        if not templates:
             return None
         p = self._products.get(product_id)
         if not p:
@@ -323,10 +406,205 @@ class ProductManager:
         if crop.size == 0:
             return None
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        if gray.shape != template.shape:
-            gray = cv2.resize(gray, (template.shape[1], template.shape[0]))
-        result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
-        return max(0.0, float(result[0][0]))
+
+        best = 0.0
+        for template in templates:
+            g = gray
+            if g.shape != template.shape:
+                g = cv2.resize(g, (template.shape[1], template.shape[0]))
+            result = cv2.matchTemplate(g, template, cv2.TM_CCOEFF_NORMED)
+            best = max(best, float(result[0][0]))
+        return max(0.0, best)
+
+    def match_score_enlarged(self, product_id: str, roi_id: str,
+                             frame: np.ndarray, margin: float = 0.10) -> float | None:
+        """ROIテンプレート（複数対応）を margin 分拡大した領域内でスライディングウィンドウ検索し、
+        全テンプレート中の最大マッチスコアを返す。製品設置検知用。"""
+        templates = self._templates.get(product_id, {}).get(roi_id, [])
+        if not templates:
+            return None
+        p = self._products.get(product_id)
+        if not p:
+            return None
+        roi = p.get_roi(roi_id)
+        if not roi:
+            return None
+
+        fh, fw = frame.shape[:2]
+        mx = roi.w * margin
+        my = roi.h * margin
+        x1 = max(0, int((roi.x - mx) * fw))
+        y1 = max(0, int((roi.y - my) * fh))
+        x2 = min(fw, int((roi.x + roi.w + mx) * fw))
+        y2 = min(fh, int((roi.y + roi.h + my) * fh))
+        search_region = frame[y1:y2, x1:x2]
+        if search_region.size == 0:
+            return None
+
+        gray = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
+        gh, gw = gray.shape[:2]
+
+        best = 0.0
+        for template in templates:
+            th, tw = template.shape[:2]
+            if th > gh or tw > gw:
+                scale = min(gh / th, gw / tw) * 0.95
+                tpl = cv2.resize(template, (int(tw * scale), int(th * scale)))
+            else:
+                tpl = template
+
+            if tpl.shape[0] > gray.shape[0] or tpl.shape[1] > gray.shape[1]:
+                continue
+
+            result = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            best = max(best, max_val)
+
+        return max(0.0, float(best))
+
+    # ── トリガーテンプレート ────────────────────────────────
+
+    def _trigger_tpl_dir(self, product_id: str) -> str:
+        return os.path.join(self._product_dir(product_id), "trigger_templates")
+
+    def _load_trigger_templates(self, product_id: str):
+        tdir = self._trigger_tpl_dir(product_id)
+        if not os.path.isdir(tdir):
+            return
+        imgs = []
+        for f in sorted(os.listdir(tdir)):
+            if f.endswith(".jpg"):
+                img = cv2.imread(os.path.join(tdir, f), cv2.IMREAD_GRAYSCALE)
+                if img is not None:
+                    imgs.append(img)
+        if imgs:
+            self._trigger_templates[product_id] = imgs
+
+    def capture_trigger_template(self, product_id: str, frame: np.ndarray,
+                                 region: dict | None = None) -> bool:
+        """トリガーテンプレートを追加登録する。
+        region: {"x","y","w","h"} 正規化座標。指定するとそのエリアをクロップして保存。
+        regionがNoneの場合はproductのtrigger_regionを使う。"""
+        with self._lock:
+            p = self._products.get(product_id)
+            if not p:
+                return False
+
+            if region:
+                # 直接指定された領域でクロップ
+                h, w = frame.shape[:2]
+                x1 = max(0, int(region["x"] * w))
+                y1 = max(0, int(region["y"] * h))
+                x2 = min(w, int((region["x"] + region["w"]) * w))
+                y2 = min(h, int((region["y"] + region["h"]) * h))
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    return False
+                # trigger_regionも更新（最後に描画した矩形）
+                p.trigger_region = region
+                self._save_product(p)
+            elif p.trigger_region:
+                crop = p.crop_trigger_region(frame)
+                if crop is None:
+                    return False
+            else:
+                return False
+
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+            self._trigger_templates.setdefault(product_id, [])
+            self._trigger_templates[product_id].append(gray)
+
+            # 領域情報もJSONで保存
+            tdir = self._trigger_tpl_dir(product_id)
+            os.makedirs(tdir, exist_ok=True)
+            idx = len(os.listdir(tdir)) // 2 + 1  # .jpg + .json pairs
+            cv2.imwrite(os.path.join(tdir, f"{idx:03d}.jpg"), gray)
+            with open(os.path.join(tdir, f"{idx:03d}.json"), "w") as f:
+                json.dump(region or p.trigger_region, f)
+            return True
+
+    def delete_trigger_template(self, product_id: str, index: int) -> bool:
+        with self._lock:
+            tpls = self._trigger_templates.get(product_id, [])
+            if index < 0 or index >= len(tpls):
+                return False
+            tpls.pop(index)
+            tdir = self._trigger_tpl_dir(product_id)
+            if os.path.isdir(tdir):
+                import shutil
+                shutil.rmtree(tdir)
+            os.makedirs(tdir, exist_ok=True)
+            for i, img in enumerate(tpls):
+                cv2.imwrite(os.path.join(tdir, f"{i + 1:03d}.jpg"), img)
+            return True
+
+    def get_trigger_template_count(self, product_id: str) -> int:
+        return len(self._trigger_templates.get(product_id, []))
+
+    def get_trigger_template_path(self, product_id: str, index: int = 0) -> str | None:
+        tdir = self._trigger_tpl_dir(product_id)
+        if not os.path.isdir(tdir):
+            return None
+        files = sorted(f for f in os.listdir(tdir) if f.endswith(".jpg"))
+        if 0 <= index < len(files):
+            return os.path.join(tdir, files[index])
+        return None
+
+    def trigger_match_score(self, product_id: str, frame: np.ndarray,
+                            margin: float = 0.10) -> float | None:
+        """トリガーテンプレートを検索エリア内でマッチングし、最大スコアを返す。
+        trigger_search_region が設定されていればそのエリアを使用。
+        なければ trigger_region を margin 分拡大して使用。"""
+        templates = self._trigger_templates.get(product_id, [])
+        if not templates:
+            return None
+        p = self._products.get(product_id)
+        if not p:
+            return None
+
+        fh, fw = frame.shape[:2]
+
+        # 検索エリアの決定
+        if p.trigger_search_region:
+            sr = p.trigger_search_region
+            x1 = max(0, int(sr["x"] * fw))
+            y1 = max(0, int(sr["y"] * fh))
+            x2 = min(fw, int((sr["x"] + sr["w"]) * fw))
+            y2 = min(fh, int((sr["y"] + sr["h"]) * fh))
+        elif p.trigger_region:
+            # フォールバック: trigger_region + margin
+            tr = p.trigger_region
+            mx, my = tr["w"] * margin, tr["h"] * margin
+            x1 = max(0, int((tr["x"] - mx) * fw))
+            y1 = max(0, int((tr["y"] - my) * fh))
+            x2 = min(fw, int((tr["x"] + tr["w"] + mx) * fw))
+            y2 = min(fh, int((tr["y"] + tr["h"] + my) * fh))
+        else:
+            return None
+
+        search = frame[y1:y2, x1:x2]
+        if search.size == 0:
+            return None
+
+        gray = cv2.cvtColor(search, cv2.COLOR_BGR2GRAY)
+        gh, gw = gray.shape[:2]
+
+        best = 0.0
+        for tpl in templates:
+            th, tw = tpl.shape[:2]
+            if th > gh or tw > gw:
+                scale = min(gh / th, gw / tw) * 0.95
+                t = cv2.resize(tpl, (int(tw * scale), int(th * scale)))
+            else:
+                t = tpl
+            if t.shape[0] > gray.shape[0] or t.shape[1] > gray.shape[1]:
+                continue
+            result = cv2.matchTemplate(gray, t, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            best = max(best, max_val)
+
+        return max(0.0, float(best))
 
     # ── 背景画像 ──────────────────────────────────────────
 
@@ -364,6 +642,18 @@ class ProductManager:
             gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
         diff = cv2.absdiff(gray, bg)
         return float(diff.mean())
+
+    def background_match_score(self, product_id: str, frame: np.ndarray) -> float | None:
+        """背景画像とのテンプレートマッチスコアを返す (0-1)。
+        スコアが高い＝現在のフレームが背景に近い＝製品が取り出されている。"""
+        bg = self._backgrounds.get(product_id)
+        if bg is None:
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if gray.shape != bg.shape:
+            gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
+        result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)
+        return max(0.0, float(result[0][0]))
 
     # ── モデル一覧 ────────────────────────────────────────
 

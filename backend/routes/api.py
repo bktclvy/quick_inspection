@@ -83,6 +83,85 @@ async def delete_product(product_id: str):
     return {"message": "製品を削除しました"}
 
 
+# ─── トリガー領域 ─────────────────────────────────────────
+
+
+class TriggerRegion(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+@router.put("/products/{product_id}/trigger-region")
+async def set_trigger_region(product_id: str, data: TriggerRegion):
+    p = product_manager.update(product_id, trigger_region=data.model_dump())
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    return {"message": "トリガー領域を設定しました", "trigger_region": data.model_dump()}
+
+
+@router.put("/products/{product_id}/trigger-search-region")
+async def set_trigger_search_region(product_id: str, data: TriggerRegion):
+    p = product_manager.update(product_id, trigger_search_region=data.model_dump())
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    return {"message": "検索エリアを設定しました"}
+
+
+@router.delete("/products/{product_id}/trigger-search-region")
+async def delete_trigger_search_region(product_id: str):
+    p = product_manager.update(product_id, trigger_search_region=None)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    return {"message": "検索エリアを削除しました"}
+
+
+@router.delete("/products/{product_id}/trigger-region")
+async def delete_trigger_region(product_id: str):
+    p = product_manager.update(product_id, trigger_region=None)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    return {"message": "トリガー領域を削除しました"}
+
+
+class TriggerCaptureReq(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
+
+
+@router.post("/products/{product_id}/trigger-template/capture")
+async def capture_trigger_template(product_id: str, data: TriggerCaptureReq | None = None):
+    frame = camera.read_frame()
+    if frame is None:
+        raise HTTPException(500, "カメラからフレームを取得できません")
+    region = None
+    if data and data.x is not None and data.y is not None and data.w is not None and data.h is not None:
+        region = {"x": data.x, "y": data.y, "w": data.w, "h": data.h}
+    if not product_manager.capture_trigger_template(product_id, frame, region):
+        raise HTTPException(400, "領域が指定されていません")
+    count = product_manager.get_trigger_template_count(product_id)
+    return {"message": "トリガーテンプレートを撮影しました", "count": count}
+
+
+@router.get("/products/{product_id}/trigger-template")
+async def get_trigger_template(product_id: str, index: int = 0):
+    path = product_manager.get_trigger_template_path(product_id, index)
+    if not path:
+        raise HTTPException(404, "テンプレートが見つかりません")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.delete("/products/{product_id}/trigger-template/{index}")
+async def delete_trigger_template(product_id: str, index: int):
+    if not product_manager.delete_trigger_template(product_id, index):
+        raise HTTPException(404, "テンプレートが見つかりません")
+    count = product_manager.get_trigger_template_count(product_id)
+    return {"message": "削除しました", "remaining": count}
+
+
 # ─── ROI（製品内）────────────────────────────────────────
 
 class CreateROI(BaseModel):
@@ -166,11 +245,19 @@ async def background_status(product_id: str):
 
 
 @router.get("/products/{product_id}/rois/{roi_id}/template")
-async def get_template(product_id: str, roi_id: str):
-    path = product_manager.get_template_path(product_id, roi_id)
+async def get_template(product_id: str, roi_id: str, index: int = 0):
+    path = product_manager.get_template_path(product_id, roi_id, index)
     if not path:
         raise HTTPException(404, "テンプレートが見つかりません")
     return FileResponse(path, media_type="image/jpeg")
+
+
+@router.delete("/products/{product_id}/rois/{roi_id}/template/{index}")
+async def delete_template(product_id: str, roi_id: str, index: int):
+    if not product_manager.delete_template(product_id, roi_id, index):
+        raise HTTPException(404, "テンプレートが見つかりません")
+    count = product_manager.get_template_count(product_id, roi_id)
+    return {"message": "テンプレートを削除しました", "remaining": count}
 
 
 # ─── カメラ ───────────────────────────────────────────────

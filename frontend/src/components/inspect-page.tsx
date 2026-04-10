@@ -77,8 +77,9 @@ export function InspectPage() {
       <div style={{
         flex: 1, minWidth: 0,
         position: 'relative',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         borderRadius: 20, overflow: 'hidden',
-        background: '#0c1218',
+        background: '#1a1625',
         boxShadow: '0 4px 32px rgba(0,0,0,0.12)',
         border: '1px solid rgba(0,0,0,0.08)',
       }}>

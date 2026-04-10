@@ -9,6 +9,7 @@ export interface ROI {
   h: number
   color: string
   has_template: boolean
+  template_count: number
   model_name: string | null
 }
 
@@ -17,6 +18,9 @@ export interface Product {
   name: string
   description: string
   rois: ROI[]
+  trigger_region: { x: number; y: number; w: number; h: number } | null
+  trigger_search_region: { x: number; y: number; w: number; h: number } | null
+  trigger_template_count: number
   inspection_config: InspectionConfig
   created_at: string
   updated_at: string

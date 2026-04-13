@@ -52,7 +52,11 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   handleWSMessage: (msg) => {
     switch (msg.type) {
       case 'status':
-        set({ isRunning: true, statusText: msg.state })
+        if (msg.state === 'stopped') {
+          set({ isRunning: false, statusText: 'stopped' })
+        } else {
+          set({ isRunning: true, statusText: msg.state })
+        }
         break
 
       case 'epoch_end': {

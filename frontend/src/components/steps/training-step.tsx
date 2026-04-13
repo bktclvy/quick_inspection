@@ -3,13 +3,14 @@
  * Camera is hidden. Full width for params + charts.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Line } from 'react-chartjs-2'
 import { Chart, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from 'chart.js'
 import { useAppStore } from '@/stores/appStore'
 import { useTrainingStore } from '@/stores/trainingStore'
 import { useTrainingWS } from '@/hooks/useTrainingWS'
 import { trainingApi } from '@/api/training'
+import { productsApi } from '@/api/products'
 import { Toast } from '@/components/layout/Toast'
 import type { AugmentationConfig } from '@/types'
 
@@ -58,17 +59,46 @@ export function TrainingStepNew() {
     rotation: 0.1, zoom: 0.1, brightness: 0.1, contrast: 0.1,
   })
   const [previews, setPreviews] = useState<string[]>([])
+  const loadedRef = useRef<string | null>(null)
+
+  // 製品configから学習設定を復元
+  useEffect(() => {
+    if (!productId || loadedRef.current === productId) return
+    loadedRef.current = productId
+    productsApi.getConfig(productId).then((cfg) => {
+      if (cfg.training_epochs != null) setEpochs(cfg.training_epochs as number)
+      if (cfg.training_lr != null) setLr(cfg.training_lr as number)
+      if (cfg.training_bs != null) setBs(cfg.training_bs as number)
+      if (cfg.training_vs != null) setVs(cfg.training_vs as number)
+      if (cfg.training_img_size != null) setImgSize(cfg.training_img_size as number)
+      if (cfg.training_freeze != null) setFreeze(cfg.training_freeze as boolean)
+      if (cfg.training_early_stop != null) setEarlyStop(cfg.training_early_stop as number)
+      if (cfg.training_aug_enabled != null) setAugEnabled(cfg.training_aug_enabled as boolean)
+      if (cfg.training_aug != null) setAug(cfg.training_aug as AugmentationConfig)
+    }).catch(() => {})
+  }, [productId])
+
+  // 学習設定を製品configに保存
+  const saveTrainingConfig = useCallback(() => {
+    if (!productId) return
+    productsApi.saveConfig(productId, {
+      training_epochs: epochs, training_lr: lr, training_bs: bs,
+      training_vs: vs, training_img_size: imgSize, training_freeze: freeze,
+      training_early_stop: earlyStop, training_aug_enabled: augEnabled,
+      training_aug: aug,
+    }).catch(() => {})
+  }, [productId, epochs, lr, bs, vs, imgSize, freeze, earlyStop, augEnabled, aug])
 
   useEffect(() => { if (productId) loadModels(productId) }, [productId, loadModels, isRunning])
 
   const start = async () => {
-    if (!productId) return; resetCharts()
+    if (!productId) return; resetCharts(); saveTrainingConfig()
     try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
     catch (e) { Toast.error(`学習開始に失敗: ${e}`) }
   }
 
   const startBatch = async () => {
-    if (!productId) return; resetCharts()
+    if (!productId) return; resetCharts(); saveTrainingConfig()
     try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
     catch (e) { Toast.error(`一括学習に失敗: ${e}`) }
   }

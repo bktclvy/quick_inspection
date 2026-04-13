@@ -30,6 +30,11 @@ class CameraManager:
         self._rotation = cv2.ROTATE_180
         self._flip_h: bool = False
         self._flip_v: bool = False
+        # カメラ設定の意図値（ドライバが正しく返さないため自前で保持）
+        self._autofocus: bool = True
+        self._focus_value: int = 0
+        self._auto_exposure: bool = True
+        self._exposure_value: int = -6
         # フレームキャッシュ（ストリームとWSループで共有）
         self._latest_frame: np.ndarray | None = None
         self._frame_id: int = 0
@@ -172,6 +177,9 @@ class CameraManager:
 
     def set_autofocus(self, enabled: bool, focus_value: int | None = None):
         """オートフォーカスの制御。enabled=Falseで固定フォーカス。"""
+        self._autofocus = enabled
+        if focus_value is not None:
+            self._focus_value = focus_value
         with self._frame_lock:
             if self._cap is None or not self._cap.isOpened():
                 return
@@ -184,6 +192,9 @@ class CameraManager:
 
     def set_exposure(self, auto: bool, value: int | None = None):
         """露出制御。"""
+        self._auto_exposure = auto
+        if value is not None:
+            self._exposure_value = value
         with self._frame_lock:
             if self._cap is None or not self._cap.isOpened():
                 return
@@ -195,18 +206,15 @@ class CameraManager:
                     self._cap.set(cv2.CAP_PROP_EXPOSURE, value)
 
     def get_camera_properties(self) -> dict:
-        """現在のカメラプロパティを取得。"""
-        with self._frame_lock:
-            if self._cap is None or not self._cap.isOpened():
-                return {}
-            return {
-                "autofocus": int(self._cap.get(cv2.CAP_PROP_AUTOFOCUS)),
-                "focus": int(self._cap.get(cv2.CAP_PROP_FOCUS)),
-                "auto_exposure": int(self._cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)),
-                "exposure": int(self._cap.get(cv2.CAP_PROP_EXPOSURE)),
-                "flip_h": self._flip_h,
-                "flip_v": self._flip_v,
-            }
+        """現在のカメラプロパティを取得。意図値を返す（ドライバの報告値は不正確なため）。"""
+        return {
+            "autofocus": self._autofocus,
+            "focus": self._focus_value,
+            "auto_exposure": self._auto_exposure,
+            "exposure": self._exposure_value,
+            "flip_h": self._flip_h,
+            "flip_v": self._flip_v,
+        }
 
     def list_cameras(self, max_check=5):
         available = []

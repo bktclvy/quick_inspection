@@ -354,14 +354,27 @@ export function ROICanvas({
 
   /* ── Effects ─────────────────────────────────── */
 
+  // 確実に描画するヘルパー
+  const redraw = useCallback(() => {
+    resizeCanvas()
+    drawAll()
+  }, [resizeCanvas, drawAll])
+
   // ResizeObserver
   useEffect(() => {
     if (!imgEl) return
-    resizeCanvas()
-    const ro = new ResizeObserver(resizeCanvas)
+    redraw()
+    const ro = new ResizeObserver(redraw)
     ro.observe(imgEl)
     return () => ro.disconnect()
-  }, [imgEl, resizeCanvas])
+  }, [imgEl, redraw])
+
+  // マウント直後はレイアウトが確定していない場合があるので遅延再描画
+  useEffect(() => {
+    const raf = requestAnimationFrame(redraw)
+    const timer = setTimeout(redraw, 100)
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer) }
+  }, [redraw])
 
   // Mouse event listeners
   useEffect(() => {
@@ -379,9 +392,8 @@ export function ROICanvas({
 
   // Redraw when rois change
   useEffect(() => {
-    resizeCanvas()
-    drawAll()
-  }, [rois, drawAll, resizeCanvas])
+    redraw()
+  }, [rois, redraw])
 
   // Pointer events
   const pointerEvents = editMode ? 'auto' : (!readOnly && rois.length > 0) ? 'auto' : 'none'

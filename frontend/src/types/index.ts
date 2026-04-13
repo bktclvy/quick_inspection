@@ -49,6 +49,8 @@ export interface InspectionConfig {
   // common
   judged_display_ms: number
   pieces_per_box: number
+  // 任意の拡張キー（学習設定、カメラ設定など）
+  [key: string]: unknown
 }
 
 export type TriggerMode = 'auto_background' | 'auto_template' | 'manual'

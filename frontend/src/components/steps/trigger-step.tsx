@@ -106,8 +106,41 @@ export function TriggerStep({ onStartDrawing, drawMode }: Props) {
     } catch { Toast.error('失敗') }
   }
 
+  const triggerMode = (config.trigger_mode as string) || 'auto'
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+      {/* ── Trigger Mode ── */}
+      <Panel title="検査トリガー">
+        <div style={{ display: 'flex', gap: 12 }}>
+          {([
+            { value: 'auto', label: '自動', desc: 'テンプレートマッチングで検知' },
+            { value: 'manual', label: '手動', desc: 'Spaceキーで検査実行' },
+          ] as const).map((opt) => (
+            <label key={opt.value} style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 10,
+              padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
+              transition: 'all 0.15s ease',
+              border: triggerMode === opt.value
+                ? '2px solid #6366f1' : '2px solid #e8e4df',
+              background: triggerMode === opt.value
+                ? '#f5f3ff' : '#faf9f7',
+            }}>
+              <input
+                type="radio" name="trigger_mode"
+                checked={triggerMode === opt.value}
+                onChange={() => saveConfig({ trigger_mode: opt.value })}
+                style={{ accentColor: '#6366f1', width: 16, height: 16 }}
+              />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#3d3654' }}>{opt.label}</div>
+                <div style={{ fontSize: 11, color: '#9994a8', marginTop: 2 }}>{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Panel>
 
       {/* ── Step 1: Search Area ── */}
       <Panel title="① 検索エリア" accent="#6366f1">

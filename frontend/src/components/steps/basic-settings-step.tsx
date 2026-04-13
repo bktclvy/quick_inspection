@@ -31,7 +31,6 @@ export function BasicSettingsStep() {
   }, [productId, config])
 
   const ppb = Number((config as Record<string, unknown>).pieces_per_box) || 0
-  const triggerMode = ((config as Record<string, unknown>).trigger_mode as string) || 'auto'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -43,37 +42,6 @@ export function BasicSettingsStep() {
         onRenamed={loadProducts}
         onDeleted={() => { selectProduct(null); loadProducts() }}
       />
-
-      {/* 検査トリガー */}
-      <Panel title="検査トリガー">
-        <div style={{ display: 'flex', gap: 12 }}>
-          {([
-            { value: 'auto', label: '自動', desc: 'テンプレートマッチングで検知' },
-            { value: 'manual', label: '手動', desc: 'Spaceキーで検査実行' },
-          ] as const).map((opt) => (
-            <label key={opt.value} style={{
-              flex: 1, display: 'flex', alignItems: 'center', gap: 10,
-              padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
-              transition: 'all 0.15s ease',
-              border: triggerMode === opt.value
-                ? '2px solid #6366f1' : '2px solid #e8e4df',
-              background: triggerMode === opt.value
-                ? '#f5f3ff' : '#faf9f7',
-            }}>
-              <input
-                type="radio" name="trigger_mode"
-                checked={triggerMode === opt.value}
-                onChange={() => save({ trigger_mode: opt.value })}
-                style={{ accentColor: '#6366f1', width: 16, height: 16 }}
-              />
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#3d3654' }}>{opt.label}</div>
-                <div style={{ fontSize: 11, color: '#9994a8', marginTop: 2 }}>{opt.desc}</div>
-              </div>
-            </label>
-          ))}
-        </div>
-      </Panel>
 
       {/* カメラ設定 */}
       <CameraSettingsPanel productId={productId} />
@@ -211,12 +179,12 @@ function CameraSettingsPanel({ productId }: { productId: string | null }) {
         </div>
         <div>
           <label style={checkLabelStyle}>
-            <input type="checkbox" checked={Number(props.auto_exposure) !== 3}
+            <input type="checkbox" checked={!props.auto_exposure}
               onChange={(e) => apply({ auto_exposure: !e.target.checked, exposure_value: Number(props.exposure) || -6 })}
               style={checkboxStyle} />
             露出固定
           </label>
-          {Number(props.auto_exposure) !== 3 && (
+          {!props.auto_exposure && (
             <div style={{ marginTop: 8 }}>
               <Field label="露出値">
                 <input type="number" min={-13} max={0}

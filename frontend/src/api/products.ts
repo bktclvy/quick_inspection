@@ -8,6 +8,8 @@ export const productsApi = {
   list: () => api<{ products: ProductSummary[] }>('/products').get().then((r) => r.products),
   get: (id: string) => api<Product>(`/products/${id}`).get(),
   create: (body: CreateProductReq) => api<Product>('/products').post(body),
+  update: (id: string, body: { name?: string; description?: string }) =>
+    api<Product>(`/products/${id}`).put(body),
   delete: (id: string) => api(`/products/${id}`).delete(),
 
   /* ROIs */

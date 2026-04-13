@@ -153,12 +153,44 @@ async def inspection_stream(websocket: WebSocket):
                 roi_results = await loop.run_in_executor(
                     None, _model_manager.predict_rois, frame, roi_dicts)
                 result = _state_machine.manual_trigger(roi_results)
+                camera.freeze_frame(frame)
+                # ログ保存
+                if result.get("state") == "judged":
+                    await loop.run_in_executor(
+                        None, product_manager.save_inspection_log,
+                        _active_product_id, frame, result)
                 msg = {"type": "state_update", **result}
                 await websocket.send_json(msg)
                 await asyncio.sleep(0)
                 continue
 
-            # ── 統一モード: トリガー検知 + 背景マッチ + 安定検知 ──
+            # ── 手動モード: 自動検知をスキップし、トリガー待機 ──
+            if getattr(_state_machine, 'trigger_mode', 'auto') == 'manual':
+                # JUDGED/WAITING 状態は取出し検知のみ行う
+                if _state_machine.state in (InspectionState.JUDGED,
+                                            InspectionState.WAITING_REMOVAL,
+                                            InspectionState.WAITING_CONFIRM):
+                    bg_match = await loop.run_in_executor(
+                        None, product_manager.background_match_score,
+                        _active_product_id, frame)
+                    prev_state = _state_machine.state
+                    result = _state_machine.process_frame_unified(
+                        {}, bg_match, 0.0, None)
+                    if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
+                        camera.unfreeze_frame()
+                    msg = {"type": "state_update", **result}
+                    msg["trigger_mode"] = "manual"
+                    await websocket.send_json(msg)
+                else:
+                    # IDLE: トリガー待ち状態を送信
+                    counters = _state_machine.get_counters()
+                    msg = {"type": "state_update", "state": "idle",
+                           "trigger_mode": "manual", "counters": counters}
+                    await websocket.send_json(msg)
+                await asyncio.sleep(0.05)
+                continue
+
+            # ── 自動モード: トリガー検知 + 背景マッチ + 安定検知 ──
 
             # フレーム間差分（安定検知用、軽いのでメイン実行）
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -179,7 +211,6 @@ async def inspection_stream(websocket: WebSocket):
                 _active_product_id, frame)
 
             trigger_score, bg_match = await asyncio.gather(trigger_future, bg_future)
-            # トリガーテンプレートのスコア。キー名はステートマシン内で区別不要（全て閾値比較）。
             match_scores: dict[str, float | None] = {"trigger": trigger_score}
 
             # モデル推論（INSPECTING時のみ）
@@ -187,7 +218,6 @@ async def inspection_stream(websocket: WebSocket):
             if _state_machine.state == InspectionState.INSPECTING:
                 roi_results = await loop.run_in_executor(
                     None, _model_manager.predict_rois, frame, roi_dicts)
-                # 検査時のフレームをフリーズ（取出しまで表示し続ける）
                 camera.freeze_frame(frame)
 
             prev_state = _state_machine.state
@@ -196,8 +226,16 @@ async def inspection_stream(websocket: WebSocket):
             result = _state_machine.process_frame_unified(
                 match_scores, bg_match, frame_diff, roi_results)
 
+            # INSPECTING遷移時に即座に推論（1フレーム遅延を排除）
+            if result.get("state") == "inspecting" and roi_results is None:
+                roi_results = await loop.run_in_executor(
+                    None, _model_manager.predict_rois, frame, roi_dicts)
+                camera.freeze_frame(frame)
+                result = _state_machine.process_frame_unified(
+                    match_scores, bg_match, frame_diff, roi_results)
+
             # JUDGED遷移時に検査ログ保存
-            if result.get("state") == "judged" and prev_state == InspectionState.INSPECTING:
+            if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
                 await loop.run_in_executor(
                     None, product_manager.save_inspection_log,
                     _active_product_id, frame, result)

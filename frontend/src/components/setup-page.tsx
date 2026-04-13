@@ -32,63 +32,45 @@ export function SetupPageNew() {
     } catch { Toast.error('作成に失敗しました') }
   }
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`${name} を削除しますか？`)) return
-    try {
-      await productsApi.delete(id)
-      if (productId === id) selectProduct(null)
-      await loadProducts()
-    } catch { Toast.error('削除に失敗しました') }
-  }
-
   return (
     <div style={{
       height: '100%', display: 'flex', flexDirection: 'column',
       fontFamily: "'DM Sans', system-ui, sans-serif",
       background: '#f7f5f2',
     }}>
-      {/* ── Product Tab Bar ── */}
+      {/* ── Product Selector Bar ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 4,
-        padding: '8px 16px',
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '10px 16px',
         borderBottom: '1px solid #ebe7e2',
         background: '#faf9f7',
         flexShrink: 0,
-        overflowX: 'auto',
       }}>
-        {products.map((p) => (
-          <div key={p.id} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '6px 14px',
-            borderRadius: 10,
-            fontSize: 13, fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'all 0.15s ease',
-            whiteSpace: 'nowrap',
-            ...(p.id === productId ? {
-              background: '#1a1625', color: '#fff',
-            } : {
-              background: 'transparent', color: '#7c7494',
-            }),
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#9994a8', letterSpacing: '0.06em' }}>
+          製品
+        </span>
+        <select
+          value={productId ?? ''}
+          onChange={(e) => selectProduct(e.target.value || null)}
+          style={{
+            height: 36, padding: '0 32px 0 12px', minWidth: 180,
+            fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+            color: '#3d3654', background: '#fff',
+            border: '1.5px solid #e8e4df', borderRadius: 10,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            appearance: 'none',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b0a9bc' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 10px center',
+            cursor: 'pointer', outline: 'none',
           }}
-            onClick={() => selectProduct(p.id)}
-          >
-            {p.name}
-            <button
-              onClick={(e) => { e.stopPropagation(); handleDelete(p.id, p.name) }}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: p.id === productId ? 'rgba(255,255,255,0.4)' : '#d4d0dc',
-                fontSize: 14, lineHeight: 1, padding: 0,
-                marginLeft: 2,
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.color = p.id === productId ? 'rgba(255,255,255,0.8)' : '#ef4444'}
-              onMouseLeave={(e) => e.currentTarget.style.color = p.id === productId ? 'rgba(255,255,255,0.4)' : '#d4d0dc'}
-            >×</button>
-          </div>
-        ))}
+        >
+          <option value="">選択してください</option>
+          {products.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
 
-        {/* Add button / input */}
         {adding ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input
@@ -99,40 +81,40 @@ export function SetupPageNew() {
                 if (e.key === 'Enter') handleAdd()
                 if (e.key === 'Escape') { setAdding(false); setNewName('') }
               }}
-              placeholder="製品名"
+              placeholder="製品名を入力"
               style={{
-                height: 32, width: 120, padding: '0 10px',
+                height: 36, width: 160, padding: '0 12px',
                 fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
-                border: '1.5px solid #6366f1', borderRadius: 8,
+                border: '1.5px solid #6366f1', borderRadius: 10,
                 outline: 'none',
               }}
             />
             <button onClick={handleAdd} style={{
-              height: 32, padding: '0 12px',
-              fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+              height: 36, padding: '0 14px',
+              fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
               background: '#6366f1', color: '#fff',
-              border: 'none', borderRadius: 8, cursor: 'pointer',
+              border: 'none', borderRadius: 10, cursor: 'pointer',
             }}>追加</button>
             <button onClick={() => { setAdding(false); setNewName('') }} style={{
-              height: 32, padding: '0 8px',
-              fontSize: 12, fontFamily: 'inherit',
+              height: 36, padding: '0 10px',
+              fontSize: 13, fontFamily: 'inherit',
               background: 'none', color: '#9994a8',
               border: 'none', cursor: 'pointer',
-            }}>×</button>
+            }}>キャンセル</button>
           </div>
         ) : (
           <button onClick={() => setAdding(true)} style={{
-            padding: '6px 12px', borderRadius: 10,
-            fontSize: 13, fontWeight: 600,
-            background: 'none', border: '1.5px dashed #d4d0dc',
-            color: '#b0a9bc', cursor: 'pointer',
-            fontFamily: 'inherit', whiteSpace: 'nowrap',
+            height: 36, padding: '0 14px',
+            fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+            background: 'none', border: '1.5px solid #d4d0dc',
+            color: '#7c7494', borderRadius: 10,
+            cursor: 'pointer', whiteSpace: 'nowrap',
             transition: 'all 0.15s ease',
           }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.color = '#6366f1' }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#d4d0dc'; e.currentTarget.style.color = '#b0a9bc' }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#d4d0dc'; e.currentTarget.style.color = '#7c7494' }}
           >
-            ＋ 新規
+            + 新規作成
           </button>
         )}
       </div>

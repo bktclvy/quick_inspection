@@ -31,8 +31,6 @@ export function InspectPage() {
   const frameDiff        = useInspectionStore((s) => s.frameDiff)
   const stabCount        = useInspectionStore((s) => s.stabilityCount)
   const stabReq          = useInspectionStore((s) => s.stabilityRequired)
-  const trigCount        = useInspectionStore((s) => s.triggerCount)
-  const trigReq          = useInspectionStore((s) => s.triggerRequired)
   const remainMs         = useInspectionStore((s) => s.remainingMs)
   const checkStatus      = useInspectionStore((s) => s.checkStatus)
   const loadCounters     = useInspectionStore((s) => s.loadCounters)
@@ -50,20 +48,22 @@ export function InspectPage() {
   const manual = useCallback(() => {
     if (state === 'waiting_confirm') {
       send({ action: 'confirm' })
-    } else if (inspecting && triggerMode === 'manual') {
+    } else if (inspecting) {
       send({ action: 'manual_trigger' })
     }
-  }, [inspecting, triggerMode, state, send])
+  }, [inspecting, state, send])
   useKeyboard('Space', manual, inspecting)
 
   const vs = visualState(state, judgment)
   const hasResults = (state === 'judged' || state === 'waiting_removal' || state === 'waiting_confirm') && roiResults.length > 0
   const confirmReason = useInspectionStore((s) => s.wsData?.confirm_reason)
+  const isManual = triggerMode === 'manual'
 
   let statusText = ''
-  if (state === 'detecting') {
-    statusText = triggerMode === 'auto_background'
-      ? `安定 ${stabCount}/${stabReq}` : `トリガー ${trigCount}/${trigReq}`
+  if (isManual && state === 'idle') {
+    statusText = 'Space で検査'
+  } else if (state === 'detecting') {
+    statusText = `安定 ${stabCount}/${stabReq}`
   } else if (state === 'idle' && bgMatch != null) {
     statusText = `BG ${(bgMatch * 100).toFixed(0)}% | Δ${frameDiff.toFixed(1)}`
   } else if (state === 'waiting_removal') {
@@ -169,6 +169,28 @@ export function InspectPage() {
             }}>
               {statusText}
             </p>
+          )}
+
+          {/* Manual trigger button */}
+          {isManual && state === 'idle' && (
+            <button
+              onClick={manual}
+              style={{
+                marginTop: 12,
+                height: 44, padding: '0 32px',
+                fontSize: 15, fontWeight: 700,
+                fontFamily: "'DM Sans', system-ui, sans-serif",
+                border: '2px solid #d4d0dc', borderRadius: 12,
+                cursor: 'pointer',
+                background: 'rgba(99,102,241,0.08)',
+                color: '#6366f1',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#6366f1'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = '#6366f1' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(99,102,241,0.08)'; e.currentTarget.style.color = '#6366f1'; e.currentTarget.style.borderColor = '#d4d0dc' }}
+            >
+              検査実行 <span style={{ fontFamily: "'JetBrains Mono'", fontSize: 12, opacity: 0.6, marginLeft: 8 }}>Space</span>
+            </button>
           )}
 
           {/* Confirm button */}

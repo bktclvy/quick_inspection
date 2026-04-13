@@ -28,6 +28,9 @@ class InspectionStateMachine:
         self._lock = threading.Lock()
         self.state = InspectionState.IDLE
 
+        # トリガーモード ("auto" or "manual")
+        self.trigger_mode: str = "auto"
+
         # 設置検知パラメータ（テンプレートマッチ）
         self.match_threshold: float = config.MATCH_THRESHOLD
         self.trigger_frames: int = config.TRIGGER_FRAMES

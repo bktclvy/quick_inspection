@@ -32,7 +32,14 @@
       "Bash(grep -n \"apiFetch<\\\\|api<\" frontend/src/api/*.ts)",
       "Bash(grep -A5 \"handleStateUpdate\\\\|handleWSMessage\" frontend/src/stores/*.ts)",
       "Bash(grep -n \"inputStyle\\\\|selectStyle\\\\|checkboxStyle\" frontend/src/components/steps/*.tsx)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(xargs cat:*)",
+      "Bash(xargs ls:*)",
+      "Bash(venv/Scripts/python --version)",
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(venv/Scripts/pyinstaller quick_inspection.spec --noconfirm)",
+      "Bash(ls -la C:\\\\Users\\\\bktcl\\\\quick_inspection/*.py)",
+      "Bash(pyinstaller:*)"
     ]
   }
 }

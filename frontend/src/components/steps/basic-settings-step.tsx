@@ -3,7 +3,7 @@
  * Pieces per box, inspection parameters (thresholds, etc.)
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAppStore } from '@/stores/appStore'
 import { productsApi } from '@/api/products'
 import { Toast } from '@/components/layout/Toast'
@@ -12,6 +12,9 @@ import type { InspectionConfig } from '@/types'
 
 export function BasicSettingsStep() {
   const productId = useAppStore((s) => s.selectedProductId)
+  const selectedProduct = useAppStore((s) => s.selectedProduct)
+  const loadProducts = useAppStore((s) => s.loadProducts)
+  const selectProduct = useAppStore((s) => s.selectProduct)
   const [config, setConfig] = useState<Partial<InspectionConfig & { pieces_per_box: number }>>({})
 
   useEffect(() => {
@@ -28,9 +31,49 @@ export function BasicSettingsStep() {
   }, [productId, config])
 
   const ppb = Number((config as Record<string, unknown>).pieces_per_box) || 0
+  const triggerMode = ((config as Record<string, unknown>).trigger_mode as string) || 'auto'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+      {/* 製品情報 */}
+      <ProductInfoPanel
+        productId={productId}
+        productName={selectedProduct?.name ?? ''}
+        onRenamed={loadProducts}
+        onDeleted={() => { selectProduct(null); loadProducts() }}
+      />
+
+      {/* 検査トリガー */}
+      <Panel title="検査トリガー">
+        <div style={{ display: 'flex', gap: 12 }}>
+          {([
+            { value: 'auto', label: '自動', desc: 'テンプレートマッチングで検知' },
+            { value: 'manual', label: '手動', desc: 'Spaceキーで検査実行' },
+          ] as const).map((opt) => (
+            <label key={opt.value} style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 10,
+              padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
+              transition: 'all 0.15s ease',
+              border: triggerMode === opt.value
+                ? '2px solid #6366f1' : '2px solid #e8e4df',
+              background: triggerMode === opt.value
+                ? '#f5f3ff' : '#faf9f7',
+            }}>
+              <input
+                type="radio" name="trigger_mode"
+                checked={triggerMode === opt.value}
+                onChange={() => save({ trigger_mode: opt.value })}
+                style={{ accentColor: '#6366f1', width: 16, height: 16 }}
+              />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#3d3654' }}>{opt.label}</div>
+                <div style={{ fontSize: 11, color: '#9994a8', marginTop: 2 }}>{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Panel>
 
       {/* カメラ設定 */}
       <CameraSettingsPanel productId={productId} />
@@ -184,6 +227,124 @@ function CameraSettingsPanel({ productId }: { productId: string | null }) {
             </div>
           )}
         </div>
+      </div>
+    </Panel>
+  )
+}
+
+function ProductInfoPanel({ productId, productName, onRenamed, onDeleted }: {
+  productId: string | null; productName: string
+  onRenamed: () => void; onDeleted: () => void
+}) {
+  const [name, setName] = useState(productName)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleteInput, setDeleteInput] = useState('')
+  const savingRef = useRef(false)
+
+  useEffect(() => { setName(productName) }, [productName])
+
+  const saveName = async () => {
+    const trimmed = name.trim()
+    if (!productId || !trimmed || trimmed === productName || savingRef.current) return
+    savingRef.current = true
+    try {
+      await productsApi.update(productId, { name: trimmed })
+      onRenamed()
+      Toast.success('製品名を変更しました')
+    } catch { Toast.error('名前の変更に失敗しました') } finally {
+      savingRef.current = false
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!productId || deleteInput !== productName) return
+    try {
+      await productsApi.delete(productId)
+      onDeleted()
+      Toast.success('製品を削除しました')
+    } catch { Toast.error('削除に失敗しました') }
+  }
+
+  return (
+    <Panel title="製品情報">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Field label="製品名">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveName() }}
+            style={inputStyle}
+          />
+        </Field>
+
+        {!deleteConfirm ? (
+          <button
+            onClick={() => setDeleteConfirm(true)}
+            style={{
+              alignSelf: 'flex-start',
+              padding: '6px 14px',
+              fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+              color: '#b0a9bc', background: 'none',
+              border: '1px solid #e8e4df', borderRadius: 8,
+              cursor: 'pointer', transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626'; e.currentTarget.style.borderColor = '#fca5a5' }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = '#b0a9bc'; e.currentTarget.style.borderColor = '#e8e4df' }}
+          >
+            この製品を削除...
+          </button>
+        ) : (
+          <div style={{
+            padding: 14, borderRadius: 10,
+            background: '#fef2f2', border: '1px solid #fecaca',
+          }}>
+            <p style={{ fontSize: 13, fontWeight: 600, color: '#991b1b', marginBottom: 8 }}>
+              この操作は取り消せません。ROI・テンプレート・モデルも全て削除されます。
+            </p>
+            <p style={{ fontSize: 12, color: '#b91c1c', marginBottom: 8 }}>
+              確認のため「<strong>{productName}</strong>」と入力してください
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                autoFocus
+                value={deleteInput}
+                onChange={(e) => setDeleteInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleDelete(); if (e.key === 'Escape') { setDeleteConfirm(false); setDeleteInput('') } }}
+                placeholder={productName}
+                style={{
+                  ...inputStyle, flex: 1,
+                  borderColor: deleteInput === productName ? '#dc2626' : '#e8e4df',
+                }}
+              />
+              <button
+                onClick={handleDelete}
+                disabled={deleteInput !== productName}
+                style={{
+                  height: 38, padding: '0 16px',
+                  fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+                  color: '#fff', border: 'none', borderRadius: 10,
+                  cursor: deleteInput === productName ? 'pointer' : 'default',
+                  background: deleteInput === productName ? '#dc2626' : '#e8c4c4',
+                  transition: 'background 0.15s ease',
+                }}
+              >
+                削除
+              </button>
+              <button
+                onClick={() => { setDeleteConfirm(false); setDeleteInput('') }}
+                style={{
+                  height: 38, padding: '0 12px',
+                  fontSize: 13, fontFamily: 'inherit',
+                  color: '#9994a8', background: 'none',
+                  border: 'none', cursor: 'pointer',
+                }}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </Panel>
   )

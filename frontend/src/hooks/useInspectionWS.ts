@@ -10,6 +10,8 @@ export function useInspectionWS() {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
+    // 前回の再接続タイマーをキャンセル
+    clearTimeout(reconnectTimer.current)
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${protocol}//${location.host}/ws/inspection`)
@@ -26,6 +28,7 @@ export function useInspectionWS() {
     ws.onclose = () => {
       wsRef.current = null
       if (inspecting) {
+        clearTimeout(reconnectTimer.current)
         reconnectTimer.current = setTimeout(connect, 1000)
       }
     }

@@ -72,9 +72,12 @@ export function ROICanvas({
   const isDrawingRef = useRef(false)
   const hoveredRef = useRef<{ roiId: string | null; handle: HandleName | null }>({ roiId: null, handle: null })
 
-  // Local copy of rois for drag operations (we mutate positions during drag)
+  // Deep copy of rois for drag operations (avoid mutating store objects)
   const roisRef = useRef<ROI[]>([])
-  roisRef.current = rois
+  // Only update when not dragging to avoid overwriting drag-in-progress state
+  if (!dragRef.current) {
+    roisRef.current = rois.map((r) => ({ ...r }))
+  }
   const resultsRef = useRef<ROIResult[] | undefined>(undefined)
   resultsRef.current = results
 

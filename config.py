@@ -1,7 +1,12 @@
 """グローバル設定定数。"""
 import os
+import sys
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller exe化時はexeの場所、通常時はスクリプトの場所
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 

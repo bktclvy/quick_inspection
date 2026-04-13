@@ -1,6 +1,7 @@
 """スレッドセーフなOpenCVカメラマネージャー（シングルトン）。"""
 import threading
 import platform
+import time
 import cv2
 import numpy as np
 import config
@@ -32,12 +33,16 @@ class CameraManager:
         # フレームキャッシュ（ストリームとWSループで共有）
         self._latest_frame: np.ndarray | None = None
         self._frame_id: int = 0
+        # キャプチャスレッド（カメラバッファ蓄積によるラグを防止）
+        self._capture_thread: threading.Thread | None = None
+        self._capture_running: bool = False
         # フリーズフレーム（検査結果表示中はこのフレームをストリームに使う）
         self._frozen_frame: np.ndarray | None = None
         self._frozen: bool = False
         self._initialized = True
 
     def open(self, index=None):
+        self._stop_capture()
         with self._frame_lock:
             if self._cap is not None:
                 self._cap.release()
@@ -48,20 +53,62 @@ class CameraManager:
             self._cap = cv2.VideoCapture(idx, backend)
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-            return self._cap.isOpened()
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            opened = self._cap.isOpened()
+        if opened:
+            self._start_capture()
+        return opened
 
     def close(self):
+        self._stop_capture()
         with self._frame_lock:
             if self._cap is not None:
                 self._cap.release()
                 self._cap = None
+
+    def _start_capture(self):
+        if self._capture_running:
+            return
+        self._capture_running = True
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop, daemon=True, name="camera-capture")
+        self._capture_thread.start()
+
+    def _stop_capture(self):
+        self._capture_running = False
+        if self._capture_thread is not None:
+            self._capture_thread.join(timeout=2.0)
+            self._capture_thread = None
+
+    def _capture_loop(self):
+        """常にカメラからフレームを読み取り、最新フレームのみ保持。
+        カメラのOSバッファ蓄積を防ぎ、映像遅延を抑制する。"""
+        while self._capture_running:
+            with self._frame_lock:
+                if self._cap is None or not self._cap.isOpened():
+                    break
+                ret, frame = self._cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            if self._rotation is not None:
+                frame = cv2.rotate(frame, self._rotation)
+            if self._flip_h:
+                frame = cv2.flip(frame, 1)
+            if self._flip_v:
+                frame = cv2.flip(frame, 0)
+            self._latest_frame = frame
+            self._frame_id += 1
 
     def is_opened(self):
         with self._frame_lock:
             return self._cap is not None and self._cap.isOpened()
 
     def read_frame(self):
-        """カメラから新しいフレームを読み取り、キャッシュも更新する。"""
+        """最新フレームを返す。キャプチャスレッド稼働中はキャッシュを使用。"""
+        if self._capture_running and self._latest_frame is not None:
+            return self._latest_frame
+        # フォールバック: キャプチャスレッド未稼働時は直接読む
         with self._frame_lock:
             if self._cap is None or not self._cap.isOpened():
                 return None

@@ -30,4 +30,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    # 学習スレッドを安全に停止してからカメラを閉じる
+    from backend.training import trainer
+    if trainer.is_running():
+        trainer.stop(timeout=5.0)
     camera.close()

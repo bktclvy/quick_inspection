@@ -14,7 +14,7 @@ export interface InspectionStateUpdate {
   trigger_required?: number
 
   // background mode
-  bg_diff?: number | null
+  bg_match?: number | null
   frame_diff?: number
   stability_count?: number
   stability_required?: number
@@ -26,6 +26,10 @@ export interface InspectionStateUpdate {
   overall_confidence?: number
   roi_results?: ROIResult[]
   remaining_ms?: number
+
+  // waiting_removal progress
+  removal_count?: number
+  removal_required?: number
 }
 
 export type InspectionState =

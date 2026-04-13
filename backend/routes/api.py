@@ -648,7 +648,7 @@ async def predict_once(product_id: str):
                 os.path.join(models_dir, f"{mn}_meta.json"),
             )
 
-    results = await asyncio.get_event_loop().run_in_executor(
+    results = await asyncio.get_running_loop().run_in_executor(
         None, model_manager.predict_rois, frame, roi_dicts)
     return {"results": results}
 
@@ -859,7 +859,7 @@ async def start_inspection(data: InspectionStart):
             if os.path.exists(model_path):
                 model_manager.load(roi.model_name, model_path, meta_path)
 
-    ws_start(data.product_id, model_manager, state_machine)
+    await ws_start(data.product_id, model_manager, state_machine)
     return {"active": True, "product_id": data.product_id}
 
 
@@ -867,7 +867,7 @@ async def start_inspection(data: InspectionStart):
 async def stop_inspection():
     from backend.routes.ws import stop_inspection as ws_stop
     from backend.state_machine import state_machine
-    ws_stop()
+    await ws_stop()
     state_machine.reset()
     return {"active": False}
 
@@ -894,13 +894,14 @@ class InspectionConfig(BaseModel):
     removal_threshold: float | None = None
     removal_frames: int | None = None
     judged_display_ms: int | None = None
-    trigger_mode: str | None = None
+    trigger_mode: str | None = None  # "auto_background" | "auto_template" | "manual"
     presence_threshold: float | None = None
     stability_threshold: float | None = None
     stability_frames: int | None = None
     removal_diff_threshold: float | None = None
     pieces_per_box: int | None = None
     removal_bg_threshold: float | None = None
+    match_margin: float | None = None
     # カメラ設定
     camera_flip_h: bool | None = None
     camera_flip_v: bool | None = None

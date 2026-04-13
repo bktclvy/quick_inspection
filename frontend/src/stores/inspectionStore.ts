@@ -6,6 +6,7 @@ import { productsApi } from '../api/products'
 
 interface InspectionStoreState {
   /* state */
+  starting: boolean
   inspecting: boolean
   inspectionProductId: string | null
   currentState: InspectionState
@@ -18,11 +19,15 @@ interface InspectionStoreState {
   wsData: InspectionStateUpdate | null
 
   /* background mode */
-  bgDiff: number | null
+  bgMatch: number | null
   frameDiff: number
   stabilityCount: number
   stabilityRequired: number
   needsBackground: boolean
+
+  /* removal progress */
+  removalCount: number
+  removalRequired: number
 
   /* template mode */
   matchScores: Record<string, number | null>
@@ -44,6 +49,7 @@ interface InspectionStoreState {
 let historyIdCounter = 0
 
 export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
+  starting: false,
   inspecting: false,
   inspectionProductId: null,
   currentState: 'idle',
@@ -54,19 +60,26 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
   roiResults: [],
   history: [],
   wsData: null,
-  bgDiff: null,
+  bgMatch: null,
   frameDiff: 0,
   stabilityCount: 0,
   stabilityRequired: 8,
   needsBackground: false,
+  removalCount: 0,
+  removalRequired: 3,
   matchScores: {},
   triggerCount: 0,
   triggerRequired: 3,
   remainingMs: 0,
 
   startInspection: async (productId) => {
-    await inspectionApi.start(productId)
-    set({ inspecting: true, inspectionProductId: productId, history: [] })
+    set({ starting: true })
+    try {
+      await inspectionApi.start(productId)
+      set({ inspecting: true, inspectionProductId: productId, history: [], starting: false })
+    } catch {
+      set({ starting: false })
+    }
   },
 
   stopInspection: async () => {
@@ -81,11 +94,13 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
       currentState: data.state,
       triggerMode: data.trigger_mode,
       counters: data.counters,
-      bgDiff: data.bg_diff ?? null,
+      bgMatch: data.bg_match ?? null,
       frameDiff: data.frame_diff ?? 0,
       stabilityCount: data.stability_count ?? 0,
       stabilityRequired: data.stability_required ?? 8,
       needsBackground: data.needs_background ?? false,
+      removalCount: data.removal_count ?? 0,
+      removalRequired: data.removal_required ?? 3,
       matchScores: data.match_scores ?? {},
       triggerCount: data.trigger_count ?? 0,
       triggerRequired: data.trigger_required ?? 3,
@@ -98,7 +113,7 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
       updates.roiResults = data.roi_results ?? []
 
       // Add to history if this is a new judgment
-      if (prev.currentState !== 'judged') {
+      if (prev.currentState !== 'judged' && data.overall_judgment) {
         const entry: HistoryEntry = {
           id: String(++historyIdCounter),
           judgment: data.overall_judgment.toLowerCase() as Judgment,

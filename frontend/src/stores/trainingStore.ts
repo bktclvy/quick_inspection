@@ -87,9 +87,19 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
         })
         break
 
-      case 'batch_roi_error':
-        // keep running, just note it
+      case 'batch_roi_error': {
+        // エラー詳細を batchResults に蓄積
+        const prev = get().batchResults ?? []
+        set({
+          batchResults: [...prev, {
+            roi_id: msg.roi_id,
+            roi_name: msg.roi_name,
+            status: 'error',
+            error: msg.error,
+          }],
+        })
         break
+      }
 
       case 'batch_complete':
         set({ isRunning: false, batchResults: msg.results, statusText: 'batch_complete' })

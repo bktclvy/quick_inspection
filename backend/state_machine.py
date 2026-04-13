@@ -9,6 +9,7 @@ IDLE → DETECTING → INSPECTING → JUDGED → WAITING_REMOVAL → IDLE
 import os
 import json
 import time
+import threading
 from enum import Enum
 import config
 
@@ -24,6 +25,7 @@ class InspectionState(str, Enum):
 
 class InspectionStateMachine:
     def __init__(self):
+        self._lock = threading.Lock()
         self.state = InspectionState.IDLE
 
         # 設置検知パラメータ（テンプレートマッチ）
@@ -66,24 +68,26 @@ class InspectionStateMachine:
     # ── 製品セットアップ ──────────────────────────────────
 
     def setup_product(self, inspection_config: dict, counter_file: str):
-        self.reset()
-        for key in ("match_threshold", "trigger_frames", "removal_diff_threshold",
-                     "removal_frames", "removal_bg_threshold", "judged_display_ms", "match_margin",
-                     "stability_threshold", "stability_frames", "pieces_per_box",
-                     # 旧パラメータも受け付ける（互換性）
-                     "presence_threshold", "removal_threshold", "trigger_mode"):
-            if key in inspection_config:
-                if hasattr(self, key):
-                    setattr(self, key, inspection_config[key])
-        self._counter_file = counter_file
-        self._load_counters()
+        with self._lock:
+            self._reset_internal()
+            for key in ("match_threshold", "trigger_frames", "removal_diff_threshold",
+                         "removal_frames", "removal_bg_threshold", "judged_display_ms", "match_margin",
+                         "stability_threshold", "stability_frames", "pieces_per_box",
+                         # 旧パラメータも受け付ける（互換性）
+                         "presence_threshold", "removal_threshold", "trigger_mode"):
+                if key in inspection_config:
+                    if hasattr(self, key):
+                        setattr(self, key, inspection_config[key])
+            self._counter_file = counter_file
+            self._load_counters()
 
     # ── 設定更新 ──────────────────────────────────────────
 
     def update_config(self, cfg: dict):
-        for key, val in cfg.items():
-            if hasattr(self, key) and not key.startswith('_'):
-                setattr(self, key, val)
+        with self._lock:
+            for key, val in cfg.items():
+                if hasattr(self, key) and not key.startswith('_'):
+                    setattr(self, key, val)
 
     # ── メインフレーム処理（統一モード）──────────────────
 
@@ -99,7 +103,16 @@ class InspectionStateMachine:
         frame_diff:   前フレームとの差分平均値 (0-255)。安定検知用。
         roi_results:  モデル推論結果（INSPECTING時のみ非None）
         """
-        counters = self.get_counters()
+        with self._lock:
+            return self._process_frame_unified_internal(
+                match_scores, bg_match, frame_diff, roi_results)
+
+    def _process_frame_unified_internal(self,
+                              match_scores: dict[str, float | None],
+                              bg_match: float | None,
+                              frame_diff: float,
+                              roi_results: list[dict] | None = None) -> dict:
+        counters = self._get_counters_internal()
         diag = {
             "bg_match": round(bg_match, 3) if bg_match is not None else None,
             "frame_diff": round(frame_diff, 1),
@@ -193,7 +206,7 @@ class InspectionStateMachine:
             else:
                 self.count_ng += 1
             self._save_counters()
-            counters = self.get_counters()
+            counters = self._get_counters_internal()
 
             return {"state": "judged", "trigger_mode": "auto",
                     "counters": counters, **diag, **judgment}
@@ -307,46 +320,48 @@ class InspectionStateMachine:
 
     def confirm(self) -> dict:
         """ユーザーが確認ボタンを押した。IDLEに戻す。"""
-        self.state = InspectionState.IDLE
-        self._trigger_count = 0
-        self._removal_count = 0
-        self._stability_count = 0
-        self._confirm_reason = ""
-        return {"state": "idle", "trigger_mode": "auto", "counters": self.get_counters()}
+        with self._lock:
+            self.state = InspectionState.IDLE
+            self._trigger_count = 0
+            self._removal_count = 0
+            self._stability_count = 0
+            self._confirm_reason = ""
+            return {"state": "idle", "trigger_mode": "auto", "counters": self._get_counters_internal()}
 
     # ── 旧APIとの互換 ────────────────────────────────────
 
     def process_frame(self, match_scores, roi_results=None):
         """旧テンプレートモード互換。統一モードにフォワード。"""
-        return self.process_frame_unified(match_scores, bg_diff=0.0, frame_diff=0.0,
+        return self.process_frame_unified(match_scores, bg_match=None, frame_diff=0.0,
                                           roi_results=roi_results)
 
-    def process_frame_background(self, bg_diff, frame_diff, roi_results=None):
+    def process_frame_background(self, bg_match, frame_diff, roi_results=None):
         """旧背景差分モード互換。統一モードにフォワード。"""
-        return self.process_frame_unified({}, bg_diff=bg_diff, frame_diff=frame_diff,
+        return self.process_frame_unified({}, bg_match=bg_match, frame_diff=frame_diff,
                                           roi_results=roi_results)
 
     def manual_trigger(self, roi_results: list[dict]) -> dict:
         """手動トリガー（デバッグ/テスト用）。"""
-        if self.state != InspectionState.IDLE:
-            return {"state": self.state.value, "trigger_mode": "manual",
-                    "counters": self.get_counters(),
-                    "error": "取出しを完了してからトリガーしてください"}
+        with self._lock:
+            if self.state != InspectionState.IDLE:
+                return {"state": self.state.value, "trigger_mode": "manual",
+                        "counters": self._get_counters_internal(),
+                        "error": "取出しを完了してからトリガーしてください"}
 
-        judgment = self._make_judgment(roi_results)
-        self.last_judgment = judgment
-        self._judgment_time = time.time()
-        self.state = InspectionState.JUDGED
+            judgment = self._make_judgment(roi_results)
+            self.last_judgment = judgment
+            self._judgment_time = time.time()
+            self.state = InspectionState.JUDGED
 
-        self.count_total += 1
-        if judgment["overall_judgment"].upper() == "OK":
-            self.count_ok += 1
-        else:
-            self.count_ng += 1
-        self._save_counters()
+            self.count_total += 1
+            if judgment["overall_judgment"].upper() == "OK":
+                self.count_ok += 1
+            else:
+                self.count_ng += 1
+            self._save_counters()
 
-        return {"state": "judged", "trigger_mode": "manual",
-                "counters": self.get_counters(), **judgment}
+            return {"state": "judged", "trigger_mode": "manual",
+                    "counters": self._get_counters_internal(), **judgment}
 
     # ── カウンター ────────────────────────────────────────
 
@@ -374,6 +389,11 @@ class InspectionStateMachine:
             pass
 
     def get_counters(self) -> dict:
+        with self._lock:
+            return self._get_counters_internal()
+
+    def _get_counters_internal(self) -> dict:
+        """ロック取得済みの状態で呼ぶこと。"""
         result = {"total": self.count_total, "ok": self.count_ok, "ng": self.count_ng}
         if self.pieces_per_box > 0:
             result["pieces_per_box"] = self.pieces_per_box
@@ -382,10 +402,16 @@ class InspectionStateMachine:
         return result
 
     def reset_counters(self):
-        self.count_total = self.count_ok = self.count_ng = 0
-        self._save_counters()
+        with self._lock:
+            self.count_total = self.count_ok = self.count_ng = 0
+            self._save_counters()
 
     def reset(self):
+        with self._lock:
+            self._reset_internal()
+
+    def _reset_internal(self):
+        """ロック取得済みの状態で呼ぶこと。"""
         self.state = InspectionState.IDLE
         self._trigger_count = 0
         self._removal_count = 0

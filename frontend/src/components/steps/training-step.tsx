@@ -63,13 +63,13 @@ export function TrainingStepNew() {
 
   const start = async () => {
     if (!productId) return; resetCharts()
-    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop } as Record<string, unknown>) }
+    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
     catch (e) { Toast.error(`学習開始に失敗: ${e}`) }
   }
 
   const startBatch = async () => {
     if (!productId) return; resetCharts()
-    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop } as Record<string, unknown>) }
+    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
     catch (e) { Toast.error(`一括学習に失敗: ${e}`) }
   }
 

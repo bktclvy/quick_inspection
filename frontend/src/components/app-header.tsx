@@ -22,6 +22,7 @@ export function AppHeader() {
   const selectProduct     = useAppStore((s) => s.selectProduct)
   const loadProducts      = useAppStore((s) => s.loadProducts)
 
+  const starting        = useInspectionStore((s) => s.starting)
   const inspecting      = useInspectionStore((s) => s.inspecting)
   const startInspection = useInspectionStore((s) => s.startInspection)
   const stopInspection  = useInspectionStore((s) => s.stopInspection)
@@ -31,7 +32,7 @@ export function AppHeader() {
 
   useEffect(() => {
     loadProducts()
-    cameraApi.list().then(setCameras).catch(() => {})
+    cameraApi.list().then(setCameras).catch((e) => console.warn('カメラ一覧取得失敗:', e))
   }, [loadProducts])
 
   return (
@@ -146,23 +147,24 @@ export function AppHeader() {
       {page === 'inspection' && (
         <>
           {!inspecting ? (
-            <button onClick={() => selectedProductId && startInspection(selectedProductId)}
-              disabled={!selectedProductId}
+            <button onClick={() => selectedProductId && !starting && startInspection(selectedProductId)}
+              disabled={!selectedProductId || starting}
               style={{
                 height: 34, padding: '0 18px',
                 fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
                 color: '#ffffff',
-                background: selectedProductId
-                  ? 'linear-gradient(135deg, #6366f1, #7c3aed)'
-                  : '#d4d0dc',
+                background: !selectedProductId || starting
+                  ? '#d4d0dc'
+                  : 'linear-gradient(135deg, #6366f1, #7c3aed)',
                 border: 'none', borderRadius: 10,
-                boxShadow: selectedProductId
+                boxShadow: selectedProductId && !starting
                   ? '0 2px 8px rgba(99,102,241,0.3)'
                   : 'none',
-                cursor: selectedProductId ? 'pointer' : 'default',
+                cursor: selectedProductId && !starting ? 'pointer' : 'default',
                 transition: 'all 0.2s ease',
+                opacity: starting ? 0.8 : 1,
               }}>
-              検査開始
+              {starting ? 'モデル読込中…' : '検査開始'}
             </button>
           ) : (
             <button onClick={stopInspection} style={{

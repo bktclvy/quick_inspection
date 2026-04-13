@@ -79,8 +79,11 @@ class Trainer:
     def get_status(self):
         return self._status
 
-    def stop(self):
+    def stop(self, timeout: float | None = None):
+        """学習を停止する。timeoutを指定するとスレッドの終了を待つ。"""
         self._stop_event.set()
+        if timeout is not None and self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
 
     def start(self, product_id: str, params: dict):
         self._stop_event.clear()
@@ -92,7 +95,7 @@ class Trainer:
             self._loop = None
 
         self._thread = threading.Thread(
-            target=self._train, args=(product_id, params), daemon=True)
+            target=self._train, args=(product_id, params), daemon=False)
         self._thread.start()
 
     def start_batch(self, product_id: str, roi_jobs: list[dict], base_params: dict):
@@ -108,15 +111,20 @@ class Trainer:
 
         self._thread = threading.Thread(
             target=self._train_batch, args=(product_id, roi_jobs, base_params),
-            daemon=True)
+            daemon=False)
         self._thread.start()
 
     def _broadcast(self, message: dict):
         from backend.routes.ws import training_mgr
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                training_mgr.broadcast(message), self._loop
-            )
+        loop = self._loop
+        if loop is not None:
+            try:
+                if loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        training_mgr.broadcast(message), loop
+                    )
+            except RuntimeError:
+                pass  # ループが閉じられた場合は無視
 
     def _train_batch(self, product_id: str, roi_jobs: list[dict], base_params: dict):
         """ROIキューを順次学習する。"""

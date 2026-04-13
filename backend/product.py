@@ -668,6 +668,55 @@ class ProductManager:
         result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)
         return max(0.0, float(result[0][0]))
 
+    # ── 検査ログ保存 ──────────────────────────────────────
+
+    def inspection_log_dir(self, product_id: str) -> str:
+        return os.path.join(self._product_dir(product_id), "inspection_log")
+
+    def save_inspection_log(self, product_id: str, frame: np.ndarray,
+                            result: dict) -> str | None:
+        """検査フレームとメタデータを保存する。保存パスを返す。"""
+        import datetime
+        p = self._products.get(product_id)
+        if not p:
+            return None
+
+        today = datetime.date.today().isoformat()
+        log_dir = os.path.join(self.inspection_log_dir(product_id), today)
+        os.makedirs(log_dir, exist_ok=True)
+
+        # 連番を決定
+        existing = [f for f in os.listdir(log_dir) if f.endswith('.jpg')]
+        seq = len(existing) + 1
+
+        judgment = result.get("overall_judgment", "UNKNOWN")
+        timestamp = datetime.datetime.now().strftime("%H%M%S")
+        base_name = f"{seq:04d}_{judgment}_{timestamp}"
+
+        # 画像保存
+        img_path = os.path.join(log_dir, f"{base_name}.jpg")
+        cv2.imwrite(img_path, frame)
+
+        # メタデータ保存
+        counters = result.get("counters", {})
+        meta = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "product_id": product_id,
+            "product_name": p.name,
+            "overall_judgment": judgment,
+            "overall_confidence": result.get("overall_confidence"),
+            "roi_results": result.get("roi_results", []),
+            "counters": counters,
+            "box_number": counters.get("completed_boxes"),
+            "box_progress": counters.get("current_box_progress"),
+            "image_file": f"{base_name}.jpg",
+        }
+        meta_path = os.path.join(log_dir, f"{base_name}.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+
+        return img_path
+
     # ── モデル一覧 ────────────────────────────────────────
 
     def list_models(self, product_id: str) -> list[dict]:

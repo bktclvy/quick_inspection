@@ -13,16 +13,13 @@ def mjpeg_generator():
     import cv2
     frame_interval = 1.0 / config.STREAM_FPS
     while True:
-        # 常にカメラから読む（キャッシュ更新のため）
-        live_frame, _ = camera.get_jpeg_bytes()
+        t0 = time.monotonic()
 
-        # フリーズ中は検査時フレームを使う
+        # キャプチャスレッドが更新するフレームを使用（フリーズ中は検査時フレーム）
         display_frame = camera.get_stream_frame()
         if display_frame is None:
-            if live_frame is None:
-                time.sleep(0.5)
-                continue
-            display_frame = live_frame
+            time.sleep(0.1)
+            continue
 
         _, jpeg = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
 
@@ -32,7 +29,11 @@ def mjpeg_generator():
             + jpeg.tobytes()
             + b"\r\n"
         )
-        time.sleep(frame_interval)
+        # 正確なフレームレート維持（処理時間を差し引く）
+        elapsed = time.monotonic() - t0
+        remaining = frame_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 @router.get("/stream")

@@ -53,6 +53,7 @@ export interface TrainingStartReq {
   image_size?: number
   freeze_base?: boolean
   augmentation?: import('.').AugmentationConfig | boolean
+  early_stop_patience?: number
 }
 
 export interface BatchTrainingStartReq {
@@ -63,6 +64,7 @@ export interface BatchTrainingStartReq {
   image_size?: number
   freeze_base?: boolean
   augmentation?: import('.').AugmentationConfig | boolean
+  early_stop_patience?: number
 }
 
 export interface AugPreviewReq {

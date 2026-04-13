@@ -13,8 +13,8 @@ import { useAudioFeedback } from '@/hooks/useAudioFeedback'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { ROICanvas } from '@/components/camera/ROICanvas'
+import type { Counters } from '@/types'
 import type { InspectionState } from '@/types/ws'
-// types used inline
 
 export function InspectPage() {
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
@@ -27,7 +27,7 @@ export function InspectPage() {
   const counters         = useInspectionStore((s) => s.counters)
   const roiResults       = useInspectionStore((s) => s.roiResults)
   const triggerMode      = useInspectionStore((s) => s.triggerMode)
-  const bgDiff           = useInspectionStore((s) => s.bgDiff)
+  const bgMatch          = useInspectionStore((s) => s.bgMatch)
   const frameDiff        = useInspectionStore((s) => s.frameDiff)
   const stabCount        = useInspectionStore((s) => s.stabilityCount)
   const stabReq          = useInspectionStore((s) => s.stabilityRequired)
@@ -64,8 +64,8 @@ export function InspectPage() {
   if (state === 'detecting') {
     statusText = triggerMode === 'auto_background'
       ? `安定 ${stabCount}/${stabReq}` : `トリガー ${trigCount}/${trigReq}`
-  } else if (state === 'idle' && triggerMode === 'auto_background' && bgDiff != null) {
-    statusText = `Δ ${bgDiff.toFixed(1)} | ${frameDiff.toFixed(1)}`
+  } else if (state === 'idle' && bgMatch != null) {
+    statusText = `BG ${(bgMatch * 100).toFixed(0)}% | Δ${frameDiff.toFixed(1)}`
   } else if (state === 'waiting_removal') {
     statusText = `取出し ${(remainMs / 1000).toFixed(1)}s`
   }
@@ -294,12 +294,7 @@ export function InspectPage() {
 
       </div>
 
-      <style>{`
-        @keyframes jPop { 0% { transform: scale(.93); } 60% { transform: scale(1.02); } 100% { transform: scale(1); } }
-        @keyframes jShake { 0%,100% { transform: translateX(0); } 15% { transform: translateX(-7px); } 30% { transform: translateX(7px); } 45% { transform: translateX(-4px); } 60% { transform: translateX(4px); } }
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        @keyframes fadeUp { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
-      `}</style>
+      {/* keyframes are in layout.css */}
     </div>
   )
 }
@@ -452,18 +447,25 @@ function CounterPanel({ counters, productId, resetCounters }: {
 }) {
   const [editing, setEditing] = useState<string | null>(null) // 'total' | 'ok' | 'ng'
   const [editVal, setEditVal] = useState('')
+  const savingRef = useRef(false)
 
   const saveCounter = async (key: string, val: number) => {
-    if (!productId) return
+    if (!productId || savingRef.current) return
+    savingRef.current = true
     try {
       const { api } = await import('@/api/client')
       const updates: Record<string, number> = { [key]: val }
       // TOTALも自動更新
       if (key === 'ok') updates.total = val + counters.ng
       if (key === 'ng') updates.total = counters.ok + val
-      await api(`/products/${productId}/counters`).put(updates)
+      const result = await api(`/products/${productId}/counters`).put(updates)
+      if (result && typeof result === 'object') {
+        useInspectionStore.setState({ counters: result as Counters })
+      }
       setEditing(null)
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally {
+      savingRef.current = false
+    }
   }
 
   const items = [
@@ -496,6 +498,7 @@ function CounterPanel({ counters, productId, resetCounters }: {
                 autoFocus
                 type="number" min={0}
                 value={editVal}
+                onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setEditVal(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') saveCounter(item.key, Number(editVal))
@@ -606,8 +609,6 @@ function BoxProgress({ counters }: { counters: Counters; productId: string | nul
     </div>
   )
 }
-
-import type { Counters } from '@/types'
 
 const LABELS: Record<InspectionState, string> = {
   idle: '待機中', detecting: '検知中', inspecting: '推論中',

@@ -25,7 +25,7 @@ export function DatasetStepNew() {
 
   const loadClasses = useCallback(async () => {
     if (!productId) return
-    try { setClasses(await datasetApi.listClasses(productId, roiId)) } catch {}
+    try { setClasses(await datasetApi.listClasses(productId, roiId)) } catch (e) { console.warn('クラス一覧取得失敗:', e) }
   }, [productId, roiId])
 
   useEffect(() => { loadClasses() }, [loadClasses])
@@ -37,7 +37,7 @@ export function DatasetStepNew() {
       setThumbs(files.slice(-12).reverse().map((f) => ({
         cls, file: f, url: datasetApi.imageUrl(productId, cls, f, roiId),
       })))
-    } catch {}
+    } catch (e) { console.warn('画像一覧取得失敗:', e) }
   }, [productId, roiId])
 
   useEffect(() => { if (selClass) loadImages(selClass) }, [selClass, loadImages])

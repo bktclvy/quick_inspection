@@ -40,6 +40,7 @@ export interface InspectionConfig {
   stability_threshold: number
   stability_frames: number
   removal_diff_threshold: number
+  removal_bg_threshold: number
   // template mode
   match_threshold: number
   trigger_frames: number
@@ -47,6 +48,7 @@ export interface InspectionConfig {
   removal_frames: number
   // common
   judged_display_ms: number
+  pieces_per_box: number
 }
 
 export type TriggerMode = 'auto_background' | 'auto_template' | 'manual'
@@ -100,6 +102,7 @@ export interface TrainingParams {
   image_size: number
   freeze_base: boolean
   augmentation: AugmentationConfig | boolean
+  early_stop_patience?: number
 }
 
 export interface AugmentationConfig {

@@ -5,6 +5,13 @@ interface CameraFeedProps {
   className?: string
 }
 
+// カメラフラッシュ用のグローバルコールバック型
+declare global {
+  interface Window {
+    __cameraFlash?: () => void
+  }
+}
+
 /**
  * MJPEG camera stream. Renders just the <img> and flash overlay.
  * Parent must provide a positioned container for the ROICanvas sibling.
@@ -13,6 +20,14 @@ export function CameraFeed({ onImgRef, className }: CameraFeedProps) {
   const imgRef = useRef<HTMLImageElement>(null)
   const flashRef = useRef<HTMLDivElement>(null)
 
+  // imgRefが設定されたら即座にonImgRefを呼ぶ（onLoadを待たない）
+  useEffect(() => {
+    if (imgRef.current && onImgRef) {
+      onImgRef(imgRef.current)
+    }
+  }, [onImgRef])
+
+  // onLoadでも念のため呼ぶ
   const handleLoad = useCallback(() => {
     if (imgRef.current && onImgRef) {
       onImgRef(imgRef.current)
@@ -20,14 +35,14 @@ export function CameraFeed({ onImgRef, className }: CameraFeedProps) {
   }, [onImgRef])
 
   useEffect(() => {
-    ;(window as unknown as Record<string, unknown>).__cameraFlash = () => {
+    window.__cameraFlash = () => {
       const el = flashRef.current
       if (!el) return
       el.style.opacity = '0.7'
       setTimeout(() => { el.style.opacity = '0' }, 60)
     }
     return () => {
-      delete (window as unknown as Record<string, unknown>).__cameraFlash
+      delete window.__cameraFlash
     }
   }, [])
 
@@ -46,6 +61,5 @@ export function CameraFeed({ onImgRef, className }: CameraFeedProps) {
 }
 
 export function triggerFlash() {
-  const fn = (window as unknown as Record<string, unknown>).__cameraFlash
-  if (typeof fn === 'function') (fn as () => void)()
+  window.__cameraFlash?.()
 }

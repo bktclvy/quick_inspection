@@ -9,6 +9,7 @@ export function useTrainingWS(enabled: boolean) {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
+    clearTimeout(reconnectTimer.current)
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${protocol}//${location.host}/ws/training`)
@@ -23,6 +24,7 @@ export function useTrainingWS(enabled: boolean) {
     ws.onclose = () => {
       wsRef.current = null
       if (enabled) {
+        clearTimeout(reconnectTimer.current)
         reconnectTimer.current = setTimeout(connect, 2000)
       }
     }
@@ -41,4 +43,12 @@ export function useTrainingWS(enabled: boolean) {
       wsRef.current = null
     }
   }, [enabled, connect])
+
+  const send = useCallback((msg: Record<string, unknown>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  return { send }
 }

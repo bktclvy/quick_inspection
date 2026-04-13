@@ -16,7 +16,7 @@ export function BasicSettingsStep() {
 
   useEffect(() => {
     if (!productId) return
-    productsApi.getConfig(productId).then(setConfig).catch(() => {})
+    productsApi.getConfig(productId).then(setConfig).catch((e) => console.warn('設定取得失敗:', e))
   }, [productId])
 
   const save = useCallback(async (updates: Record<string, unknown>) => {
@@ -27,7 +27,7 @@ export function BasicSettingsStep() {
     catch { Toast.error('保存に失敗しました') }
   }, [productId, config])
 
-  const ppb = (config as Record<string, unknown>).pieces_per_box as number ?? 0
+  const ppb = Number((config as Record<string, unknown>).pieces_per_box) || 0
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -113,7 +113,7 @@ function CameraSettingsPanel({ productId }: { productId: string | null }) {
         }
         const p = await api<Record<string, unknown>>('/camera/properties').get()
         setProps(p)
-      } catch {}
+      } catch (e) { console.warn('カメラ設定読み込み失敗:', e) }
       setLoaded(true)
     }
     load()

@@ -10,7 +10,6 @@ interface ToastItem {
   exiting: boolean
 }
 
-let addToast: (message: string, type: ToastType) => void = () => {}
 let idCounter = 0
 
 const DURATIONS: Record<ToastType, number> = {
@@ -19,10 +18,11 @@ const DURATIONS: Record<ToastType, number> = {
   error: 5000,
 }
 
+// CustomEvent ベースで Toast を発火（モジュール変数パターンより確実）
 export const Toast = {
-  info: (msg: string) => addToast(msg, 'info'),
-  success: (msg: string) => addToast(msg, 'success'),
-  error: (msg: string) => addToast(msg, 'error'),
+  info: (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg, type: 'info' } })),
+  success: (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg, type: 'success' } })),
+  error: (msg: string) => window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg, type: 'error' } })),
 }
 
 export function ToastContainer() {
@@ -34,7 +34,7 @@ export function ToastContainer() {
     setTimeout(() => setItems((prev) => prev.filter((t) => t.id !== id)), 200)
   }, [])
 
-  addToast = useCallback(
+  const addToast = useCallback(
     (message: string, type: ToastType) => {
       const id = ++idCounter
       setItems((prev) => [...prev, { id, message, type, exiting: false }])
@@ -45,27 +45,33 @@ export function ToastContainer() {
   )
 
   useEffect(() => {
+    const handler = (e: Event) => {
+      const { message, type } = (e as CustomEvent).detail
+      addToast(message, type)
+    }
+    window.addEventListener('app-toast', handler)
     return () => {
+      window.removeEventListener('app-toast', handler)
       timers.current.forEach(clearTimeout)
     }
-  }, [])
+  }, [addToast])
 
-  const typeStyles: Record<ToastType, string> = {
-    info: 'var(--accent)',
-    success: 'var(--ok)',
-    error: 'var(--ng)',
+  const typeColors: Record<ToastType, string> = {
+    info: '#6366f1',
+    success: '#10b981',
+    error: '#ef4444',
   }
 
   return createPortal(
     <div
       style={{
         position: 'fixed',
-        top: 'var(--sp-4)',
-        right: 'var(--sp-4)',
+        top: 16,
+        right: 16,
         zIndex: 9999,
         display: 'flex',
         flexDirection: 'column',
-        gap: 'var(--sp-2)',
+        gap: 8,
         pointerEvents: 'none',
       }}
     >
@@ -74,14 +80,17 @@ export function ToastContainer() {
           key={t.id}
           style={{
             pointerEvents: 'auto',
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--border-default)',
-            borderLeft: `3px solid ${typeStyles[t.type]}`,
-            borderRadius: 'var(--radius-md)',
-            padding: 'var(--sp-3) var(--sp-4)',
-            fontSize: 'var(--text-sm)',
-            boxShadow: 'var(--shadow-lg)',
-            maxWidth: '360px',
+            background: '#ffffff',
+            border: '1px solid #ebe7e2',
+            borderLeft: `3px solid ${typeColors[t.type]}`,
+            borderRadius: 10,
+            padding: '12px 16px',
+            fontSize: 13,
+            fontFamily: "'DM Sans', system-ui, sans-serif",
+            color: '#3d3654',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
+            maxWidth: 360,
+            cursor: 'pointer',
             animation: t.exiting ? 'toastOut 0.2s ease forwards' : 'toastIn 0.2s ease',
           }}
           onClick={() => remove(t.id)}

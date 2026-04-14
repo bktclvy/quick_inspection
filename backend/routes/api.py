@@ -771,7 +771,8 @@ async def augmentation_preview(product_id: str, req: AugPreviewRequest):
         raise HTTPException(400, "画像がありません")
 
     src_path = random.choice(all_images)
-    src_img = cv2.imread(src_path)
+    buf = np.fromfile(src_path, dtype=np.uint8)
+    src_img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if src_img is None:
         raise HTTPException(500, "画像の読み込みに失敗しました")
     src_img = cv2.cvtColor(src_img, cv2.COLOR_BGR2RGB)

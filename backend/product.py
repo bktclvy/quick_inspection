@@ -11,6 +11,28 @@ import config
 
 ROI_COLORS = ["#2563eb", "#e11d48", "#16a34a", "#d97706", "#7c3aed", "#0891b2"]
 
+
+# cv2.imread/imwrite は非ASCIIパス（日本語ユーザー名等）で失敗するため numpy 経由で処理
+def _imread(path: str, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    try:
+        buf = np.fromfile(path, dtype=np.uint8)
+        return cv2.imdecode(buf, flags)
+    except Exception:
+        return None
+
+
+def _imwrite(path: str, img: np.ndarray, params: list | None = None) -> bool:
+    try:
+        ext = os.path.splitext(path)[1]
+        result, buf = cv2.imencode(ext, img, params or [])
+        if result:
+            buf.tofile(path)
+            return True
+        return False
+    except Exception:
+        return False
+
+
 # 照明変化耐性のためのヒストグラム均一化
 _clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
@@ -193,7 +215,7 @@ class ProductManager:
                 imgs = []
                 for f in sorted(os.listdir(entry_path)):
                     if f.endswith(".jpg"):
-                        img = cv2.imread(os.path.join(entry_path, f), cv2.IMREAD_GRAYSCALE)
+                        img = _imread(os.path.join(entry_path, f), cv2.IMREAD_GRAYSCALE)
                         if img is not None:
                             imgs.append(img)
                 if imgs:
@@ -202,7 +224,7 @@ class ProductManager:
                 # 旧形式: 単一ファイル → リスト化
                 roi_id = entry[:-4]
                 if roi_id not in self._templates.get(product_id, {}):
-                    img = cv2.imread(entry_path, cv2.IMREAD_GRAYSCALE)
+                    img = _imread(entry_path, cv2.IMREAD_GRAYSCALE)
                     if img is not None:
                         self._templates[product_id][roi_id] = [img]
 
@@ -369,7 +391,7 @@ class ProductManager:
             roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
             os.makedirs(roi_tpl_dir, exist_ok=True)
             idx = len(os.listdir(roi_tpl_dir)) + 1
-            cv2.imwrite(os.path.join(roi_tpl_dir, f"{idx:03d}.jpg"), gray)
+            _imwrite(os.path.join(roi_tpl_dir, f"{idx:03d}.jpg"), gray)
             return True
 
     def delete_template(self, product_id: str, roi_id: str, index: int) -> bool:
@@ -384,7 +406,7 @@ class ProductManager:
             _safe_delete(roi_tpl_dir, self._dir)
             os.makedirs(roi_tpl_dir, exist_ok=True)
             for i, img in enumerate(tpls):
-                cv2.imwrite(os.path.join(roi_tpl_dir, f"{i + 1:03d}.jpg"), img)
+                _imwrite(os.path.join(roi_tpl_dir, f"{i + 1:03d}.jpg"), img)
             return True
 
     def get_template_count(self, product_id: str, roi_id: str) -> int:
@@ -489,7 +511,7 @@ class ProductManager:
         imgs = []
         for f in sorted(os.listdir(tdir)):
             if f.endswith(".jpg"):
-                img = cv2.imread(os.path.join(tdir, f), cv2.IMREAD_GRAYSCALE)
+                img = _imread(os.path.join(tdir, f), cv2.IMREAD_GRAYSCALE)
                 if img is not None:
                     imgs.append(img)
         if imgs:
@@ -534,7 +556,7 @@ class ProductManager:
             tdir = self._trigger_tpl_dir(product_id)
             os.makedirs(tdir, exist_ok=True)
             idx = len(os.listdir(tdir)) // 2 + 1  # .jpg + .json pairs
-            cv2.imwrite(os.path.join(tdir, f"{idx:03d}.jpg"), gray)
+            _imwrite(os.path.join(tdir, f"{idx:03d}.jpg"), gray)
             with open(os.path.join(tdir, f"{idx:03d}.json"), "w") as f:
                 json.dump(region or p.trigger_region, f)
             return True
@@ -549,7 +571,7 @@ class ProductManager:
             _safe_delete(tdir, self._dir)
             os.makedirs(tdir, exist_ok=True)
             for i, img in enumerate(tpls):
-                cv2.imwrite(os.path.join(tdir, f"{i + 1:03d}.jpg"), img)
+                _imwrite(os.path.join(tdir, f"{i + 1:03d}.jpg"), img)
             return True
 
     def get_trigger_template_count(self, product_id: str) -> int:
@@ -624,7 +646,7 @@ class ProductManager:
     def _load_background(self, product_id: str):
         bg_path = self.background_path(product_id)
         if os.path.isfile(bg_path):
-            img = cv2.imread(bg_path, cv2.IMREAD_GRAYSCALE)
+            img = _imread(bg_path, cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 self._backgrounds[product_id] = img
 
@@ -635,7 +657,7 @@ class ProductManager:
         gray = _normalize_gray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         bg_path = self.background_path(product_id)
         os.makedirs(os.path.dirname(bg_path), exist_ok=True)
-        cv2.imwrite(bg_path, gray)
+        _imwrite(bg_path, gray)
         self._backgrounds[product_id] = gray
         return True
 
@@ -695,7 +717,7 @@ class ProductManager:
 
         # 画像保存
         img_path = os.path.join(log_dir, f"{base_name}.jpg")
-        cv2.imwrite(img_path, frame)
+        _imwrite(img_path, frame)
 
         # メタデータ保存
         counters = result.get("counters", {})

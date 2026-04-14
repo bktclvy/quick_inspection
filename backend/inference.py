@@ -29,6 +29,12 @@ class ModelManager:
 
         with self._lock:
             model = tf.keras.models.load_model(model_path)
+            # tf.function でラップして推論を高速化
+            predict_fn = tf.function(lambda x: model(x, training=False))
+            # トレース実行（初回呼び出しのコンパイルを事前に済ませる）
+            dummy = tf.zeros((1, config.DEFAULT_IMAGE_SIZE, config.DEFAULT_IMAGE_SIZE, 3))
+            predict_fn(dummy)
+
             meta = {}
             class_names = []
             image_size = config.DEFAULT_IMAGE_SIZE
@@ -43,6 +49,7 @@ class ModelManager:
 
             self._models[model_name] = {
                 "model": model,
+                "predict_fn": predict_fn,
                 "class_names": class_names,
                 "class_judgments": class_judgments,
                 "image_size": image_size,
@@ -64,6 +71,7 @@ class ModelManager:
         import tensorflow as tf
         import cv2
 
+        # ロックは辞書参照のみ。推論自体はロック外で並列実行可能
         with self._lock:
             if not self._models:
                 return None
@@ -75,59 +83,57 @@ class ModelManager:
             if entry is None:
                 return None
 
-            model = entry["model"]
+            predict_fn = entry["predict_fn"]
             class_names = entry["class_names"]
             class_judgments = entry.get("class_judgments", {})
             image_size = entry["image_size"]
 
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (image_size, image_size))
-            img = np.expand_dims(img, axis=0).astype(np.float32)
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (image_size, image_size))
+        img = np.expand_dims(img, axis=0).astype(np.float32)
 
-            predictions = model.predict(img, verbose=0)
-            probs = predictions[0]
-            class_idx = int(np.argmax(probs))
-            confidence = float(probs[class_idx])
+        predictions = predict_fn(tf.constant(img))
+        probs = predictions[0].numpy()
+        class_idx = int(np.argmax(probs))
+        confidence = float(probs[class_idx])
 
-            class_name = (
-                class_names[class_idx]
-                if class_idx < len(class_names)
-                else str(class_idx)
-            )
+        class_name = (
+            class_names[class_idx]
+            if class_idx < len(class_names)
+            else str(class_idx)
+        )
 
-            judgment = class_judgments.get(class_name, "ng")
+        judgment = class_judgments.get(class_name, "ng")
 
-            return {
-                "predicted_class": class_name,
-                "judgment": judgment,
-                "confidence": round(confidence, 4),
-                "probabilities": {
-                    class_names[i] if i < len(class_names) else str(i):
-                    round(float(probs[i]), 4)
-                    for i in range(len(probs))
-                },
-            }
+        return {
+            "predicted_class": class_name,
+            "judgment": judgment,
+            "confidence": round(confidence, 4),
+            "probabilities": {
+                class_names[i] if i < len(class_names) else str(i):
+                round(float(probs[i]), 4)
+                for i in range(len(probs))
+            },
+        }
 
     def predict_rois(self, frame, rois: list[dict]) -> list[dict]:
-        """各ROIを割り当てモデルで推論する。
+        """各ROIを割り当てモデルで推論する（並列実行）。
         ROI別の結果リストを返す。"""
         import cv2
+        from concurrent.futures import ThreadPoolExecutor
 
-        results = []
-        for roi in rois:
+        def _predict_one(roi: dict) -> dict:
             roi_id = roi["id"]
             roi_name = roi.get("name", roi_id)
             model_name = roi.get("model_name")
 
             if not model_name or model_name not in self._models:
-                results.append({
+                return {
                     "roi_id": roi_id,
                     "roi_name": roi_name,
                     "error": f"モデル未読込: {model_name}",
-                })
-                continue
+                }
 
-            # フレームをROIでクロップ
             h, w = frame.shape[:2]
             x1 = max(0, int(roi["x"] * w))
             y1 = max(0, int(roi["y"] * h))
@@ -136,30 +142,31 @@ class ModelManager:
             crop = frame[y1:y2, x1:x2]
 
             if crop.size == 0:
-                results.append({
+                return {
                     "roi_id": roi_id,
                     "roi_name": roi_name,
                     "error": "クロップ領域が空です",
-                })
-                continue
+                }
 
             pred = self.predict(crop, model_name)
             if pred is None:
-                results.append({
+                return {
                     "roi_id": roi_id,
                     "roi_name": roi_name,
                     "error": "推論に失敗しました",
-                })
-                continue
+                }
 
-            results.append({
+            return {
                 "roi_id": roi_id,
                 "roi_name": roi_name,
                 "predicted_class": pred["predicted_class"],
                 "judgment": pred.get("judgment", "ng"),
                 "confidence": pred["confidence"],
                 "probabilities": pred["probabilities"],
-            })
+            }
+
+        with ThreadPoolExecutor(max_workers=len(rois)) as pool:
+            results = list(pool.map(_predict_one, rois))
 
         return results
 

@@ -1,7 +1,9 @@
 """Application entry point — opens as a desktop window via pywebview."""
 import os
 import sys
+import time
 import threading
+import urllib.request
 import uvicorn
 import config
 
@@ -51,6 +53,16 @@ if __name__ == "__main__":
         import webview
 
         threading.Thread(target=start_server, daemon=True).start()
+
+        # サーバー起動を待機（遅いPCでwebviewが先に開いてエラーになるのを防ぐ）
+        url = f"http://127.0.0.1:{config.PORT}"
+        for _ in range(50):  # 最大10秒
+            try:
+                urllib.request.urlopen(url, timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+
         webview.create_window(
             "Quick Inspection",
             f"http://127.0.0.1:{config.PORT}",

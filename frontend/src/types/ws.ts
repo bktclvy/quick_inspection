@@ -30,6 +30,9 @@ export interface InspectionStateUpdate {
   // waiting_removal progress
   removal_count?: number
   removal_required?: number
+
+  // perf diagnostics (debug only)
+  _timings?: { match_ms: number; infer_ms: number | null; total_ms: number }
 }
 
 export type InspectionState =

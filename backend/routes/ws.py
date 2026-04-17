@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import json
+import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -192,6 +193,7 @@ async def inspection_stream(websocket: WebSocket):
                 continue
 
             # ── 自動モード: トリガー検知 + 背景MAD + 安定検知 ──
+            t_frame = time.monotonic()
 
             # cvtColor は1回だけ（frame_diff / trigger / bg MAD で共有）
             raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -210,14 +212,20 @@ async def inspection_stream(websocket: WebSocket):
                 None, product_manager.background_mad_gray,
                 _active_product_id, raw_gray)
 
+            t0 = time.monotonic()
             trigger_score, bg_diff = await asyncio.gather(trigger_future, bg_future)
+            t_match_ms = int((time.monotonic() - t0) * 1000)
+
             match_scores: dict[str, float | None] = {"trigger": trigger_score}
 
             # モデル推論（INSPECTING時のみ）
+            t_infer_ms: int | None = None
             roi_results = None
             if _state_machine.state == InspectionState.INSPECTING:
+                t0 = time.monotonic()
                 roi_results = await loop.run_in_executor(
                     None, _model_manager.predict_rois, frame, roi_dicts)
+                t_infer_ms = int((time.monotonic() - t0) * 1000)
                 camera.freeze_frame(frame)
 
             prev_state = _state_machine.state
@@ -228,8 +236,10 @@ async def inspection_stream(websocket: WebSocket):
 
             # INSPECTING遷移時に即座に推論（1フレーム遅延を排除）
             if result.get("state") == "inspecting" and roi_results is None:
+                t0 = time.monotonic()
                 roi_results = await loop.run_in_executor(
                     None, _model_manager.predict_rois, frame, roi_dicts)
+                t_infer_ms = int((time.monotonic() - t0) * 1000)
                 camera.freeze_frame(frame)
                 result = _state_machine.process_frame_unified(
                     match_scores, bg_diff, frame_diff, roi_results)
@@ -244,7 +254,9 @@ async def inspection_stream(websocket: WebSocket):
             if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
                 camera.unfreeze_frame()
 
-            msg = {"type": "state_update", **result}
+            t_total_ms = int((time.monotonic() - t_frame) * 1000)
+            msg = {"type": "state_update", **result,
+                   "_timings": {"match_ms": t_match_ms, "infer_ms": t_infer_ms, "total_ms": t_total_ms}}
             await websocket.send_json(msg)
 
             await asyncio.sleep(0.03)

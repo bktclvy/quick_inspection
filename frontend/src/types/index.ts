@@ -53,7 +53,7 @@ export interface InspectionConfig {
   [key: string]: unknown
 }
 
-export type TriggerMode = 'auto_background' | 'auto_template' | 'manual'
+export type TriggerMode = 'auto_background' | 'auto_template' | 'manual' | 'ai'
 
 export type Judgment = 'ok' | 'ng'
 

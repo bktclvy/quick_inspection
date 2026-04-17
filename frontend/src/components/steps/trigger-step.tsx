@@ -116,6 +116,7 @@ export function TriggerStep({ onStartDrawing, drawMode }: Props) {
         <div style={{ display: 'flex', gap: 12 }}>
           {([
             { value: 'auto', label: '自動', desc: 'テンプレートマッチングで検知' },
+            { value: 'ai', label: 'AI', desc: 'AIモデルでトリガー検知（実験的）' },
             { value: 'manual', label: '手動', desc: 'Spaceキーで検査実行' },
           ] as const).map((opt) => (
             <label key={opt.value} style={{

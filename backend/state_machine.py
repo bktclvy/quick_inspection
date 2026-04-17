@@ -57,6 +57,7 @@ class InspectionStateMachine:
         self._trigger_count: int = 0      # 設置検知用連続マッチ数
         self._removal_count: int = 0      # 取出し検知用連続一致数
         self._stability_count: int = 0    # 安定フレーム数
+        self._ai_trigger_count: int = 0   # AI トリガー用連続一致数
 
         # 判定結果保持
         self.last_judgment: dict | None = None
@@ -331,6 +332,62 @@ class InspectionStateMachine:
             self._confirm_reason = ""
             return {"state": "idle", "trigger_mode": "auto", "counters": self._get_counters_internal()}
 
+    # ── AI トリガーモード ─────────────────────────────────
+
+    def process_frame_ai_trigger(self, roi_results: list[dict], bg_match: float | None) -> dict:
+        """AIトリガーモード: モデル推論結果でトリガーを判断する。
+        ROIのいずれかが 'uninspectable' を返す間はトリガーしない。"""
+        with self._lock:
+            return self._process_ai_trigger_internal(roi_results, bg_match)
+
+    def _process_ai_trigger_internal(self, roi_results: list[dict], bg_match: float | None) -> dict:
+        counters = self._get_counters_internal()
+        diag = {"bg_match": round(bg_match, 3) if bg_match is not None else None}
+
+        if self.state == InspectionState.IDLE:
+            has_uninspectable = any(
+                r.get("judgment") == "uninspectable"
+                for r in roi_results if "error" not in r
+            )
+            has_error = any("error" in r for r in roi_results)
+            if not roi_results or has_uninspectable or has_error:
+                self._ai_trigger_count = 0
+                return {"state": "idle", "trigger_mode": "ai", "counters": counters,
+                        "trigger_count": 0, "trigger_required": self.trigger_frames, **diag}
+
+            self._ai_trigger_count += 1
+            if self._ai_trigger_count >= self.trigger_frames:
+                judgment = self._make_judgment(roi_results)
+                self.last_judgment = judgment
+                self._judgment_time = time.time()
+                self.state = InspectionState.JUDGED
+                self._ai_trigger_count = 0
+                self.count_total += 1
+                if judgment["overall_judgment"].upper() == "OK":
+                    self.count_ok += 1
+                else:
+                    self.count_ng += 1
+                self._save_counters()
+                counters = self._get_counters_internal()
+                return {"state": "judged", "trigger_mode": "ai",
+                        "counters": counters, **diag, **judgment}
+
+            return {"state": "idle", "trigger_mode": "ai", "counters": counters,
+                    "trigger_count": self._ai_trigger_count,
+                    "trigger_required": self.trigger_frames, **diag}
+
+        # 非IDLE: 取出し検知のみ (_process_frame_unified_internal に委譲)
+        if bg_match is None:
+            result = {"state": self.state.value, "trigger_mode": "ai",
+                      "counters": counters, **diag}
+            if self.last_judgment:
+                result.update(self.last_judgment)
+            return result
+
+        result = self._process_frame_unified_internal({}, bg_match, 0.0, None)
+        result["trigger_mode"] = "ai"
+        return result
+
     # ── 旧APIとの互換 ────────────────────────────────────
 
     def process_frame(self, match_scores, roi_results=None):
@@ -419,6 +476,7 @@ class InspectionStateMachine:
         self._trigger_count = 0
         self._removal_count = 0
         self._stability_count = 0
+        self._ai_trigger_count = 0
         self.last_judgment = None
         self._judgment_time = None
 

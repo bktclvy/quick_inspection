@@ -192,6 +192,40 @@ async def inspection_stream(websocket: WebSocket):
                 await asyncio.sleep(0.05)
                 continue
 
+            # ── AI トリガーモード ──
+            if getattr(_state_machine, 'trigger_mode', 'auto') == 'ai':
+                t_frame_ai = time.monotonic()
+                raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                bg_match = await loop.run_in_executor(
+                    None, product_manager.background_match_score_gray,
+                    _active_product_id, raw_gray)
+
+                roi_results_ai: list[dict] = []
+                t_infer_ms: int | None = None
+                if _state_machine.state == InspectionState.IDLE:
+                    t0 = time.monotonic()
+                    roi_results_ai = await loop.run_in_executor(
+                        None, _model_manager.predict_rois, frame, roi_dicts)
+                    t_infer_ms = int((time.monotonic() - t0) * 1000)
+
+                prev_state = _state_machine.state
+                result = _state_machine.process_frame_ai_trigger(roi_results_ai, bg_match)
+
+                if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
+                    camera.freeze_frame(frame)
+                    await loop.run_in_executor(
+                        None, product_manager.save_inspection_log,
+                        _active_product_id, frame, result)
+                if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
+                    camera.unfreeze_frame()
+
+                t_total_ai = int((time.monotonic() - t_frame_ai) * 1000)
+                msg = {"type": "state_update", **result,
+                       "_timings": {"match_ms": 0, "infer_ms": t_infer_ms, "total_ms": t_total_ai}}
+                await websocket.send_json(msg)
+                await asyncio.sleep(0.03)
+                continue
+
             # ── 自動モード: トリガー検知 + 背景MAD + 安定検知 ──
             t_frame = time.monotonic()
 

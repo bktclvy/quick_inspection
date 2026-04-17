@@ -58,11 +58,16 @@ export function InspectPage() {
   const hasResults = (state === 'judged' || state === 'waiting_removal' || state === 'waiting_confirm') && roiResults.length > 0
   const confirmReason = useInspectionStore((s) => s.wsData?.confirm_reason)
   const timings       = useInspectionStore((s) => s.wsData?._timings)
+  const lastInferMsRef = useRef<number | null>(null)
+  if (timings?.infer_ms != null) lastInferMsRef.current = timings.infer_ms
   const isManual = triggerMode === 'manual'
+  const isAI = triggerMode === 'ai'
 
   let statusText = ''
   if (isManual && state === 'idle') {
     statusText = 'Space で検査'
+  } else if (isAI && state === 'idle') {
+    statusText = 'AI 検知中...'
   } else if (state === 'detecting') {
     statusText = `安定 ${stabCount}/${stabReq}`
   } else if (state === 'idle' && bgMatch != null) {
@@ -100,7 +105,7 @@ export function InspectPage() {
             color: 'rgba(255,255,255,0.35)',
             pointerEvents: 'none', userSelect: 'none',
           }}>
-            {`match ${timings.match_ms}ms  infer ${timings.infer_ms != null ? timings.infer_ms + 'ms' : '—'}  Σ ${timings.total_ms}ms`}
+            {`match ${timings.match_ms}ms  infer ${lastInferMsRef.current != null ? lastInferMsRef.current + 'ms' : '—'}  Σ ${timings.total_ms}ms`}
           </div>
         )}
       </div>

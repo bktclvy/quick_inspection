@@ -6,7 +6,7 @@ AI カメラ検査アプリ。USB ウェブカメラで製品を撮影し、Mobi
 
 - **同一マシンで完結**: フロントエンドとバックエンドは必ず同じPCで動作する。リモート配信は想定外。
 - **Windows 環境**: Python 3.10, DirectShow カメラ
-- **配布**: PyInstaller でのexe化を予定
+- **配布**: PyInstaller onedir でexe化。別PCのデスクトップ等に配置して使用
 
 ## 技術スタック
 
@@ -99,10 +99,28 @@ IDLE → DETECTING → INSPECTING → JUDGED → WAITING_REMOVAL → IDLE
 - 判定: ROI別モデル推論 + 多数決
 - パラメータ: presence_threshold, stability_frames, judged_display_ms 等
 
+## PyInstaller ビルド
+
+```bash
+# 必ずフロントエンドを先にビルド（dist/ を生成）
+cd frontend && npm run build
+
+# exe ビルド（--distpath で出力先を分離。dist/ を上書きしないように）
+cd .. && python -m PyInstaller quick_inspection.spec --noconfirm --distpath build_output
+```
+
+### パス解決の注意点
+
+- **バンドルデータ (dist/)**: exe内の `_internal/dist/` に展開される。`app.py` は `__file__` 基準で参照
+- **ユーザーデータ (products/)**: exe と同階層。`config.BASE_DIR = os.path.dirname(sys.executable)` で参照
+- **`cv2.imread` / `cv2.imwrite` は使用禁止**: 日本語ユーザー名のパス（デスクトップ等）で失敗する。代わりに `product.py` の `_imread` / `_imwrite` を使うこと
+- **`__file__` ベースのパス**: frozen 環境では `_internal/` 内を指す。ユーザーデータには `config.BASE_DIR` を使う
+
 ## コーディング規約
 
 - フロントは React + TypeScript (Vite)
 - UI テーマはライト系 (ダーク非推奨)
 - UIライブラリ (shadcn/ui, MUI, Tailwind等) は使わない。手書きCSS
 - CSS は 4px グリッドベースのスペーシングシステム
+- CSS変数をインラインスタイルで使う場合は `:root` で定義済みか確認する
 - Python は型ヒントを適宜使用

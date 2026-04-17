@@ -22,7 +22,7 @@ export function JudgmentDisplay() {
   const currentState = useInspectionStore((s) => s.currentState)
   const judgment = useInspectionStore((s) => s.overallJudgment)
   const confidence = useInspectionStore((s) => s.overallConfidence)
-  const bgMatch = useInspectionStore((s) => s.bgMatch)
+  const bgDiff = useInspectionStore((s) => s.bgDiff)
   const frameDiff = useInspectionStore((s) => s.frameDiff)
   const stabilityCount = useInspectionStore((s) => s.stabilityCount)
   const stabilityRequired = useInspectionStore((s) => s.stabilityRequired)
@@ -42,8 +42,8 @@ export function JudgmentDisplay() {
   if (currentState === 'detecting') {
     if (triggerMode === 'auto_background') progress = `安定度 ${stabilityCount}/${stabilityRequired}`
     else if (triggerMode === 'auto_template') progress = `トリガー ${triggerCount}/${triggerRequired}`
-  } else if (currentState === 'idle' && triggerMode === 'auto_background' && bgMatch != null) {
-    progress = `差分 ${bgMatch.toFixed(1)} / ${frameDiff.toFixed(1)}`
+  } else if (currentState === 'idle' && triggerMode === 'auto_background' && bgDiff != null) {
+    progress = `差分 ${bgDiff.toFixed(1)} / ${frameDiff.toFixed(1)}`
   } else if (currentState === 'waiting_removal') {
     progress = `残り ${(remainingMs / 1000).toFixed(1)}s`
   }

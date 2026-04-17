@@ -34,7 +34,7 @@ export function InspectionPage() {
   const roiResults       = useInspectionStore((s) => s.roiResults)
   const history          = useInspectionStore((s) => s.history)
   const triggerMode      = useInspectionStore((s) => s.triggerMode)
-  const bgMatch           = useInspectionStore((s) => s.bgMatch)
+  const bgDiff           = useInspectionStore((s) => s.bgDiff)
   const frameDiff        = useInspectionStore((s) => s.frameDiff)
   const stabCount        = useInspectionStore((s) => s.stabilityCount)
   const stabReq          = useInspectionStore((s) => s.stabilityRequired)
@@ -97,7 +97,7 @@ export function InspectionPage() {
 
         {/* ─── Judgment Display ──────────────────────── */}
         <JudgmentCard vs={vs} state={state} judgment={judgment} confidence={confidence}
-          triggerMode={triggerMode} bgMatch={bgMatch} frameDiff={frameDiff}
+          triggerMode={triggerMode} bgDiff={bgDiff} frameDiff={frameDiff}
           stabCount={stabCount} stabReq={stabReq}
           trigCount={trigCount} trigReq={trigReq} remainMs={remainMs} />
 
@@ -136,10 +136,10 @@ function Counter({ value, label, color, border }: {
 
 type VS = 'idle' | 'detecting' | 'ok' | 'ng' | 'waiting'
 
-function JudgmentCard({ vs, state, judgment, confidence, triggerMode, bgMatch, frameDiff,
+function JudgmentCard({ vs, state, judgment, confidence, triggerMode, bgDiff, frameDiff,
   stabCount, stabReq, trigCount, trigReq, remainMs }: {
   vs: VS; state: InspectionState; judgment: 'OK' | 'NG' | null; confidence: number | null
-  triggerMode: string; bgMatch: number | null; frameDiff: number
+  triggerMode: string; bgDiff: number | null; frameDiff: number
   stabCount: number; stabReq: number; trigCount: number; trigReq: number; remainMs: number
 }) {
   const prevVs = useRef<VS>('idle')
@@ -152,8 +152,8 @@ function JudgmentCard({ vs, state, judgment, confidence, triggerMode, bgMatch, f
   let sub = ''
   if (state === 'detecting') {
     sub = triggerMode === 'auto_background' ? `${stabCount} / ${stabReq} 安定` : `${trigCount} / ${trigReq}`
-  } else if (state === 'idle' && triggerMode === 'auto_background' && bgMatch != null) {
-    sub = `Δ ${bgMatch.toFixed(1)} | ${frameDiff.toFixed(1)}`
+  } else if (state === 'idle' && triggerMode === 'auto_background' && bgDiff != null) {
+    sub = `Δ ${bgDiff.toFixed(1)} | ${frameDiff.toFixed(1)}`
   } else if (state === 'waiting_removal') {
     sub = `取出し ${(remainMs / 1000).toFixed(1)}s`
   }

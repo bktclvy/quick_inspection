@@ -13,6 +13,7 @@ import { useAudioFeedback } from '@/hooks/useAudioFeedback'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { ROICanvas } from '@/components/camera/ROICanvas'
+import { CalibrationWizard } from '@/components/inspection/CalibrationWizard'
 import type { Counters } from '@/types'
 import type { InspectionState } from '@/types/ws'
 
@@ -71,6 +72,7 @@ export function InspectPage() {
   }
 
   return (
+  <>
     <div style={{
       height: '100%', display: 'flex', gap: 16, padding: 16,
       fontFamily: "'DM Sans', system-ui, sans-serif",
@@ -318,6 +320,8 @@ export function InspectPage() {
 
       {/* keyframes are in layout.css */}
     </div>
+    <CalibrationWizard />
+  </>
   )
 }
 

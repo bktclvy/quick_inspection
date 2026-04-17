@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAppStore } from '@/stores/appStore'
 import { useInspectionStore } from '@/stores/inspectionStore'
+import { useCalibrationStore } from '@/stores/calibrationStore'
 import { cameraApi } from '@/api/camera'
 
 export function AppHeader() {
@@ -24,8 +25,8 @@ export function AppHeader() {
 
   const starting        = useInspectionStore((s) => s.starting)
   const inspecting      = useInspectionStore((s) => s.inspecting)
-  const startInspection = useInspectionStore((s) => s.startInspection)
   const stopInspection  = useInspectionStore((s) => s.stopInspection)
+  const openCalibration = useCalibrationStore((s) => s.open)
 
   const [cameras, setCameras] = useState<number[]>([0])
   const [camIdx, setCamIdx]   = useState(0)
@@ -147,7 +148,7 @@ export function AppHeader() {
       {page === 'inspection' && (
         <>
           {!inspecting ? (
-            <button onClick={() => selectedProductId && !starting && startInspection(selectedProductId)}
+            <button onClick={() => selectedProductId && !starting && openCalibration(selectedProductId)}
               disabled={!selectedProductId || starting}
               style={{
                 height: 34, padding: '0 18px',

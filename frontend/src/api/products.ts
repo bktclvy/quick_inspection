@@ -51,6 +51,20 @@ export const productsApi = {
   getCounters: (id: string) => api<Counters>(`/products/${id}/counters`).get(),
   resetCounters: (id: string) => api(`/products/${id}/counters/reset`).post(),
 
+  /* Trigger Templates */
+  captureTriggerTemplate: (id: string) =>
+    api<{ message: string; count: number }>(`/products/${id}/trigger-template/capture`).post(),
+  deleteTriggerTemplate: (id: string, index: number) =>
+    api(`/products/${id}/trigger-template/${index}`).delete(),
+  triggerScores: (id: string) =>
+    api<{ trigger_score: number | null; bg_score: number | null }>(`/products/${id}/trigger-scores`).get(),
+  clearTriggerTemplates: async (id: string, count: number) => {
+    for (let i = count - 1; i >= 0; i--) {
+      await api(`/products/${id}/trigger-template/${i}`).delete()
+    }
+  },
+
   /* Predict */
-  predictOnce: (id: string) => api(`/products/${id}/predict-once`).post(),
+  predictOnce: (id: string) =>
+    api<{ results: Array<{ roi_id: string; roi_name: string; judgment: string; predicted_class: string; confidence: number; probabilities: Record<string, number> }> }>(`/products/${id}/predict-once`).post(),
 }

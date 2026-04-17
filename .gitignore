@@ -8,3 +8,5 @@ products/
 .dev-port
 dist/
 frontend/node_modules/
+build/
+build_output/

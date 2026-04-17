@@ -170,12 +170,13 @@ async def inspection_stream(websocket: WebSocket):
                 if _state_machine.state in (InspectionState.JUDGED,
                                             InspectionState.WAITING_REMOVAL,
                                             InspectionState.WAITING_CONFIRM):
-                    bg_match = await loop.run_in_executor(
-                        None, product_manager.background_match_score,
-                        _active_product_id, frame)
+                    raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    bg_diff = await loop.run_in_executor(
+                        None, product_manager.background_mad_gray,
+                        _active_product_id, raw_gray)
                     prev_state = _state_machine.state
                     result = _state_machine.process_frame_unified(
-                        {}, bg_match, 0.0, None)
+                        {}, bg_diff, 0.0, None)
                     if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
                         camera.unfreeze_frame()
                     msg = {"type": "state_update", **result}
@@ -190,27 +191,26 @@ async def inspection_stream(websocket: WebSocket):
                 await asyncio.sleep(0.05)
                 continue
 
-            # ── 自動モード: トリガー検知 + 背景マッチ + 安定検知 ──
+            # ── 自動モード: トリガー検知 + 背景MAD + 安定検知 ──
 
-            # フレーム間差分（安定検知用、軽いのでメイン実行）
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # cvtColor は1回だけ（frame_diff / trigger / bg MAD で共有）
+            raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             if prev_gray is None:
                 frame_diff = 0.0
             else:
-                fd = cv2.absdiff(gray, prev_gray)
-                frame_diff = float(fd.mean())
-            prev_gray = gray
+                frame_diff = float(cv2.absdiff(raw_gray, prev_gray).mean())
+            prev_gray = raw_gray
 
-            # トリガーマッチ + 背景マッチを並列実行
+            # トリガーマッチ + 背景MADを並列実行
             margin = getattr(_state_machine, 'match_margin', 0.10)
             trigger_future = loop.run_in_executor(
-                None, product_manager.trigger_match_score,
-                _active_product_id, frame, margin)
+                None, product_manager.trigger_match_score_gray,
+                _active_product_id, raw_gray, margin)
             bg_future = loop.run_in_executor(
-                None, product_manager.background_match_score,
-                _active_product_id, frame)
+                None, product_manager.background_mad_gray,
+                _active_product_id, raw_gray)
 
-            trigger_score, bg_match = await asyncio.gather(trigger_future, bg_future)
+            trigger_score, bg_diff = await asyncio.gather(trigger_future, bg_future)
             match_scores: dict[str, float | None] = {"trigger": trigger_score}
 
             # モデル推論（INSPECTING時のみ）
@@ -224,7 +224,7 @@ async def inspection_stream(websocket: WebSocket):
 
             # ステートマシン処理
             result = _state_machine.process_frame_unified(
-                match_scores, bg_match, frame_diff, roi_results)
+                match_scores, bg_diff, frame_diff, roi_results)
 
             # INSPECTING遷移時に即座に推論（1フレーム遅延を排除）
             if result.get("state") == "inspecting" and roi_results is None:
@@ -232,7 +232,7 @@ async def inspection_stream(websocket: WebSocket):
                     None, _model_manager.predict_rois, frame, roi_dicts)
                 camera.freeze_frame(frame)
                 result = _state_machine.process_frame_unified(
-                    match_scores, bg_match, frame_diff, roi_results)
+                    match_scores, bg_diff, frame_diff, roi_results)
 
             # JUDGED遷移時に検査ログ保存
             if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:

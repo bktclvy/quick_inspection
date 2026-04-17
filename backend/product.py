@@ -690,6 +690,66 @@ class ProductManager:
         result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)
         return max(0.0, float(result[0][0]))
 
+    def trigger_match_score_gray(self, product_id: str, raw_gray: np.ndarray,
+                                 margin: float = 0.10) -> float | None:
+        """trigger_match_score の高速版。cvtColor 済みの raw_gray を受け取る。
+        CLAHE は内部で検索領域にのみ適用（従来通り）。"""
+        templates = self._trigger_templates.get(product_id, [])
+        if not templates:
+            return None
+        p = self._products.get(product_id)
+        if not p:
+            return None
+
+        fh, fw = raw_gray.shape[:2]
+        if p.trigger_search_region:
+            sr = p.trigger_search_region
+            x1 = max(0, int(sr["x"] * fw))
+            y1 = max(0, int(sr["y"] * fh))
+            x2 = min(fw, int((sr["x"] + sr["w"]) * fw))
+            y2 = min(fh, int((sr["y"] + sr["h"]) * fh))
+        elif p.trigger_region:
+            tr = p.trigger_region
+            mx, my = tr["w"] * margin, tr["h"] * margin
+            x1 = max(0, int((tr["x"] - mx) * fw))
+            y1 = max(0, int((tr["y"] - my) * fh))
+            x2 = min(fw, int((tr["x"] + tr["w"] + mx) * fw))
+            y2 = min(fh, int((tr["y"] + tr["h"] + my) * fh))
+        else:
+            return None
+
+        search = raw_gray[y1:y2, x1:x2]
+        if search.size == 0:
+            return None
+        gray = _normalize_gray(search)
+        gh, gw = gray.shape[:2]
+
+        best = 0.0
+        for tpl in templates:
+            th, tw = tpl.shape[:2]
+            if th > gh or tw > gw:
+                scale = min(gh / th, gw / tw) * 0.95
+                t = cv2.resize(tpl, (int(tw * scale), int(th * scale)))
+            else:
+                t = tpl
+            if t.shape[0] > gray.shape[0] or t.shape[1] > gray.shape[1]:
+                continue
+            result = cv2.matchTemplate(gray, t, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            best = max(best, max_val)
+        return max(0.0, float(best))
+
+    def background_mad_gray(self, product_id: str, raw_gray: np.ndarray) -> float | None:
+        """cvtColor 済みの raw_gray と保存済み背景画像の MAD を返す (0-255)。
+        低い = 背景に近い (= 製品が取り出された)。"""
+        bg = self._backgrounds.get(product_id)
+        if bg is None:
+            return None
+        gray = _normalize_gray(raw_gray)
+        if gray.shape != bg.shape:
+            gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
+        return float(cv2.absdiff(gray, bg).mean())
+
     # ── 検査ログ保存 ──────────────────────────────────────
 
     def inspection_log_dir(self, product_id: str) -> str:

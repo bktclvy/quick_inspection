@@ -14,7 +14,7 @@ export interface InspectionStateUpdate {
   trigger_required?: number
 
   // background mode
-  bg_match?: number | null
+  bg_diff?: number | null
   frame_diff?: number
   stability_count?: number
   stability_required?: number

@@ -36,8 +36,8 @@ class InspectionStateMachine:
         self.trigger_frames: int = config.TRIGGER_FRAMES
         self.match_margin: float = 0.10  # ROI拡大マージン（10%）
 
-        # 取出し検知パラメータ（背景MAD）
-        self.removal_bg_threshold: float = config.REMOVAL_DIFF_THRESHOLD  # 背景との差分がこれ以下→取出し確認
+        # 取出し検知パラメータ（背景NCC）
+        self.removal_bg_threshold: float = 0.85  # 背景NCCスコアがこれ以上→取出し確認
         self.removal_frames: int = getattr(config, 'REMOVAL_FRAMES', 3)
 
         # 表示
@@ -81,9 +81,6 @@ class InspectionStateMachine:
                 if key in inspection_config:
                     if hasattr(self, key):
                         setattr(self, key, inspection_config[key])
-            # NCC→MAD移行: 旧値(0-1)はNCC時代の値なのでデフォルトのMAD閾値に差し替え
-            if self.removal_bg_threshold <= 1.0:
-                self.removal_bg_threshold = config.REMOVAL_DIFF_THRESHOLD
             self._counter_file = counter_file
             self._load_counters()
 
@@ -99,34 +96,34 @@ class InspectionStateMachine:
 
     def process_frame_unified(self,
                               match_scores: dict[str, float | None],
-                              bg_diff: float | None,
+                              bg_match: float | None,
                               frame_diff: float,
                               roi_results: list[dict] | None = None) -> dict:
-        """1フレームを処理する。設置検知（ROIテンプレート）＋取出検知（背景MAD）の統一モード。
+        """1フレームを処理する。設置検知（ROIテンプレート）＋取出検知（背景NCC）の統一モード。
 
         match_scores: 各ROIの拡大領域マッチスコア {roi_id: 0-1 or None}
-        bg_diff:      背景との平均絶対差分 (0-255)。低い＝背景に近い＝製品なし。Noneなら背景未登録。
+        bg_match:     背景NCCスコア (0-1)。高い＝背景に近い＝製品なし。Noneなら背景未登録。
         frame_diff:   前フレームとの差分平均値 (0-255)。安定検知用。
         roi_results:  モデル推論結果（INSPECTING時のみ非None）
         """
         with self._lock:
             return self._process_frame_unified_internal(
-                match_scores, bg_diff, frame_diff, roi_results)
+                match_scores, bg_match, frame_diff, roi_results)
 
     def _process_frame_unified_internal(self,
                               match_scores: dict[str, float | None],
-                              bg_diff: float | None,
+                              bg_match: float | None,
                               frame_diff: float,
                               roi_results: list[dict] | None = None) -> dict:
         counters = self._get_counters_internal()
         diag = {
-            "bg_diff": round(bg_diff, 3) if bg_diff is not None else None,
+            "bg_match": round(bg_match, 3) if bg_match is not None else None,
             "frame_diff": round(frame_diff, 1),
             "match_scores": {k: round(v, 3) if v is not None else None for k, v in match_scores.items()},
         }
 
         # 背景未設定
-        if bg_diff is None:
+        if bg_match is None:
             return {"state": "idle", "trigger_mode": "auto",
                     "counters": counters, "needs_background": True, **diag}
 
@@ -224,7 +221,7 @@ class InspectionStateMachine:
             display_done = elapsed >= self.judged_display_ms
 
             # 表示中でも取出しチェックを行う
-            if bg_diff is not None and bg_diff <= self.removal_bg_threshold:
+            if bg_match is not None and bg_match >= self.removal_bg_threshold:
                 self._removal_count += 1
             else:
                 self._removal_count = 0
@@ -271,10 +268,10 @@ class InspectionStateMachine:
                 result.update(self.last_judgment)
             return result
 
-        # ── WAITING_REMOVAL: 取出し確認（背景MAD） ──
+        # ── WAITING_REMOVAL: 取出し確認（背景NCC） ──
         if self.state == InspectionState.WAITING_REMOVAL:
-            # 背景との差分が閾値以下 → 背景に戻った → 取出し確認
-            if bg_diff <= self.removal_bg_threshold:
+            # 背景NCCスコアが閾値以上 → 背景に戻った → 取出し確認
+            if bg_match >= self.removal_bg_threshold:
                 self._removal_count += 1
             else:
                 self._removal_count = 0
@@ -338,12 +335,12 @@ class InspectionStateMachine:
 
     def process_frame(self, match_scores, roi_results=None):
         """旧テンプレートモード互換。統一モードにフォワード。"""
-        return self.process_frame_unified(match_scores, bg_diff=None, frame_diff=0.0,
+        return self.process_frame_unified(match_scores, bg_match=None, frame_diff=0.0,
                                           roi_results=roi_results)
 
-    def process_frame_background(self, bg_diff, frame_diff, roi_results=None):
+    def process_frame_background(self, bg_match, frame_diff, roi_results=None):
         """旧背景差分モード互換。統一モードにフォワード。"""
-        return self.process_frame_unified({}, bg_diff=bg_diff, frame_diff=frame_diff,
+        return self.process_frame_unified({}, bg_match=bg_match, frame_diff=frame_diff,
                                           roi_results=roi_results)
 
     def manual_trigger(self, roi_results: list[dict]) -> dict:

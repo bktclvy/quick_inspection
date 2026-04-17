@@ -19,7 +19,7 @@ interface InspectionStoreState {
   wsData: InspectionStateUpdate | null
 
   /* background mode */
-  bgDiff: number | null
+  bgMatch: number | null
   frameDiff: number
   stabilityCount: number
   stabilityRequired: number
@@ -60,7 +60,7 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
   roiResults: [],
   history: [],
   wsData: null,
-  bgDiff: null,
+  bgMatch: null,
   frameDiff: 0,
   stabilityCount: 0,
   stabilityRequired: 8,
@@ -94,7 +94,7 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
       currentState: data.state,
       triggerMode: data.trigger_mode,
       counters: data.counters,
-      bgDiff: data.bg_diff ?? null,
+      bgMatch: data.bg_match ?? null,
       frameDiff: data.frame_diff ?? 0,
       stabilityCount: data.stability_count ?? 0,
       stabilityRequired: data.stability_required ?? 8,

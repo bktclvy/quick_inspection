@@ -690,6 +690,18 @@ class ProductManager:
         result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)
         return max(0.0, float(result[0][0]))
 
+    def background_match_score_gray(self, product_id: str, raw_gray: np.ndarray) -> float | None:
+        """background_match_score の高速版。cvtColor 済みの raw_gray を受け取る。
+        NCC (0-1) を返す。高い = 背景に近い = 製品が取り出された。"""
+        bg = self._backgrounds.get(product_id)
+        if bg is None:
+            return None
+        gray = _normalize_gray(raw_gray)
+        if gray.shape != bg.shape:
+            gray = cv2.resize(gray, (bg.shape[1], bg.shape[0]))
+        result = cv2.matchTemplate(gray, bg, cv2.TM_CCOEFF_NORMED)
+        return max(0.0, float(result[0][0]))
+
     def trigger_match_score_gray(self, product_id: str, raw_gray: np.ndarray,
                                  margin: float = 0.10) -> float | None:
         """trigger_match_score の高速版。cvtColor 済みの raw_gray を受け取る。

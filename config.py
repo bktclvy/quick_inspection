@@ -29,7 +29,7 @@ DEFAULT_TRIGGER_MODE = "auto_background"  # "auto_background", "auto_template", 
 PRESENCE_THRESHOLD = 25.0    # 背景差分の平均値がこれ以上→物体あり (0-255)
 STABILITY_THRESHOLD = 5.0    # フレーム間差分の平均値がこれ以下→安定 (0-255)
 STABILITY_FRAMES = 8         # 安定が連続Nフレーム→検査発火
-REMOVAL_DIFF_THRESHOLD = 15.0  # 背景差分がこれ以下→物体なし（取り出し完了）
+REMOVAL_DIFF_THRESHOLD = 40.0  # 背景MADがこれ以下→物体なし（取り出し完了）
 
 # 製品
 PRODUCTS_DIR = os.path.join(BASE_DIR, "products")

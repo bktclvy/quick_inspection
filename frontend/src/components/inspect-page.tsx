@@ -28,11 +28,10 @@ export function InspectPage() {
   const counters         = useInspectionStore((s) => s.counters)
   const roiResults       = useInspectionStore((s) => s.roiResults)
   const triggerMode      = useInspectionStore((s) => s.triggerMode)
-  const bgDiff           = useInspectionStore((s) => s.bgDiff)
+  const bgMatch          = useInspectionStore((s) => s.bgMatch)
   const frameDiff        = useInspectionStore((s) => s.frameDiff)
   const stabCount        = useInspectionStore((s) => s.stabilityCount)
   const stabReq          = useInspectionStore((s) => s.stabilityRequired)
-  const remainMs         = useInspectionStore((s) => s.remainingMs)
   const checkStatus      = useInspectionStore((s) => s.checkStatus)
   const loadCounters     = useInspectionStore((s) => s.loadCounters)
   const resetCounters    = useInspectionStore((s) => s.resetCounters)
@@ -66,10 +65,10 @@ export function InspectPage() {
     statusText = 'Space で検査'
   } else if (state === 'detecting') {
     statusText = `安定 ${stabCount}/${stabReq}`
-  } else if (state === 'idle' && bgDiff != null) {
-    statusText = `差分 ${bgDiff.toFixed(1)} | Δ${frameDiff.toFixed(1)}`
+  } else if (state === 'idle' && bgMatch != null) {
+    statusText = `BG ${(bgMatch * 100).toFixed(0)}% | Δ${frameDiff.toFixed(1)}`
   } else if (state === 'waiting_removal') {
-    statusText = `取出し ${(remainMs / 1000).toFixed(1)}s`
+    statusText = bgMatch != null ? `取出し待ち BG ${(bgMatch * 100).toFixed(0)}%` : '取出し待ち'
   }
 
   return (

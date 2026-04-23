@@ -94,7 +94,7 @@ export interface DatasetClass {
 
 /* ── Training ─────────────────────────────────────── */
 
-export type Backbone = 'mobilenetv2' | 'efficientnetb0' | 'efficientnetb3' | 'efficientnetv2s'
+export type Backbone = 'mobilenetv2' | 'efficientnetv2b0' | 'efficientnetv2b3' | 'efficientnetv2s'
 
 export interface TrainingParams {
   model_name: string

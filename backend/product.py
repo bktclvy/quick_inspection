@@ -1,5 +1,6 @@
 """製品管理 — ROI、テンプレート、データセット、モデルを束ねる。"""
 import os
+import re
 import json
 import uuid
 import time
@@ -10,6 +11,44 @@ import send2trash
 import config
 
 ROI_COLORS = ["#2563eb", "#e11d48", "#16a34a", "#d97706", "#7c3aed", "#0891b2"]
+
+# Windows で禁止された文字（NTFS / FAT 共通）と制御文字
+_INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED = (
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _safe_folder_name(name: str, fallback: str) -> str:
+    """ユーザー入力の名前を Windows で安全なフォルダ名に変換する。
+    - 禁止文字 / 制御文字は `_` に置換
+    - 前後の空白・ドットを除去
+    - 連続する `_` は1つに圧縮
+    - 空になったら fallback
+    - Windows 予約名に一致したら末尾に `_` を付ける
+    - 40文字で切り詰め
+    日本語等の Unicode はそのまま保持する（project は非ASCIIパス対応済み）。"""
+    s = _INVALID_CHARS_RE.sub("_", (name or "").strip())
+    s = s.strip(" .")
+    s = re.sub(r"_+", "_", s)
+    if not s:
+        s = fallback
+    if s.upper() in _WINDOWS_RESERVED:
+        s = s + "_"
+    return s[:40]
+
+
+def _unique_folder_name(base: str, existing: set[str]) -> str:
+    """同階層の既存フォルダ名と衝突しない名前を返す。衝突時は _2, _3, ... を付与。"""
+    if base not in existing:
+        return base
+    for i in range(2, 1000):
+        cand = f"{base}_{i}"
+        if cand not in existing:
+            return cand
+    return f"{base}_{int(time.time())}"
 
 
 # cv2.imread/imwrite は非ASCIIパス（日本語ユーザー名等）で失敗するため numpy 経由で処理
@@ -52,10 +91,11 @@ def _safe_delete(path: str, base_dir: str):
 
 
 class ROIDefinition:
-    __slots__ = ("id", "name", "x", "y", "w", "h", "model_name", "color")
+    __slots__ = ("id", "name", "x", "y", "w", "h", "model_name", "color", "folder_name")
 
     def __init__(self, id: str, name: str, x: float, y: float, w: float, h: float,
-                 model_name: str | None = None, color: str = "#2563eb"):
+                 model_name: str | None = None, color: str = "#2563eb",
+                 folder_name: str | None = None):
         self.id = id
         self.name = name
         self.x = x
@@ -64,6 +104,8 @@ class ROIDefinition:
         self.h = h
         self.model_name = model_name
         self.color = color
+        # folder_name が空なら id を使う（旧データ互換）
+        self.folder_name = folder_name or id
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__slots__}
@@ -86,10 +128,13 @@ class Product:
                  trigger_region: dict | None = None,
                  trigger_search_region: dict | None = None,
                  inspection_config: dict | None = None,
-                 created_at: str = "", updated_at: str = "", **kwargs):
+                 created_at: str = "", updated_at: str = "",
+                 folder_name: str | None = None, **kwargs):
         self.id = id
         self.name = name
         self.description = description
+        # folder_name が空なら id を使う（旧データ互換）
+        self.folder_name = folder_name or id
         self.rois = rois or []
         # トリガー領域
         # trigger_region: テンプレート矩形（マッチ対象）
@@ -109,6 +154,7 @@ class Product:
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "description": self.description,
+            "folder_name": self.folder_name,
             "rois": [r.to_dict() for r in self.rois],
             "trigger_region": self.trigger_region,
             "trigger_search_region": self.trigger_search_region,
@@ -123,7 +169,8 @@ class Product:
                    rois=rois, trigger_region=d.get("trigger_region"),
                    trigger_search_region=d.get("trigger_search_region"),
                    inspection_config=d.get("inspection_config"),
-                   created_at=d.get("created_at", ""), updated_at=d.get("updated_at", ""))
+                   created_at=d.get("created_at", ""), updated_at=d.get("updated_at", ""),
+                   folder_name=d.get("folder_name"))
 
     def get_roi(self, roi_id: str) -> ROIDefinition | None:
         for r in self.rois:
@@ -157,10 +204,15 @@ class ProductManager:
         self._backgrounds: dict[str, np.ndarray] = {}               # product_id -> グレースケール背景画像
         os.makedirs(self._dir, exist_ok=True)
         self._load_all()
+        self._migrate_legacy_folders()
 
     # ── 永続化 ────────────────────────────────────────────
 
     def _product_dir(self, product_id: str) -> str:
+        p = self._products.get(product_id)
+        if p and p.folder_name:
+            return os.path.join(self._dir, p.folder_name)
+        # フォールバック: ID をそのままフォルダ名として使う（新規作成直前・旧データ用）
         return os.path.join(self._dir, product_id)
 
     def _product_json(self, product_id: str) -> str:
@@ -181,6 +233,35 @@ class ProductManager:
     def background_path(self, product_id: str) -> str:
         return os.path.join(self._product_dir(product_id), "background.jpg")
 
+    # ── ROI フォルダ名解決 ──────────────────────────────
+    def _roi_folder(self, product_id: str, roi_id: str) -> str:
+        """roi_id から実際のフォルダ名（folder_name）を引く。見つからなければ roi_id を返す。"""
+        p = self._products.get(product_id)
+        if not p:
+            return roi_id
+        roi = p.get_roi(roi_id)
+        if not roi:
+            return roi_id
+        return roi.folder_name or roi.id
+
+    def roi_templates_dir(self, product_id: str, roi_id: str) -> str:
+        return os.path.join(self.templates_dir(product_id), self._roi_folder(product_id, roi_id))
+
+    def roi_datasets_dir(self, product_id: str, roi_id: str) -> str:
+        return os.path.join(self.datasets_dir(product_id), self._roi_folder(product_id, roi_id))
+
+    def roi_folder_names(self, product_id: str) -> set[str]:
+        """datasets/ 配下で「ROI専用サブフォルダ」と判定すべき名前の集合。クラス名と区別するために使う。"""
+        p = self._products.get(product_id)
+        if not p:
+            return set()
+        names: set[str] = set()
+        for r in p.rois:
+            if r.folder_name:
+                names.add(r.folder_name)
+            names.add(r.id)  # 旧データ互換
+        return names
+
     def _load_all(self):
         if not os.path.isdir(self._dir):
             return
@@ -190,6 +271,9 @@ class ProductManager:
                 try:
                     with open(json_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
+                    # folder_name が未設定 (旧データ) は実ディレクトリ名で埋める
+                    if not data.get("folder_name"):
+                        data["folder_name"] = name
                     p = Product.from_dict(data)
                     self._products[p.id] = p
                     self._load_templates(p.id)
@@ -198,20 +282,84 @@ class ProductManager:
                 except (json.JSONDecodeError, KeyError):
                     pass
 
+    def _migrate_legacy_folders(self):
+        """起動時マイグレーション: UUID ベースの旧フォルダ名を name 由来の人間可読名にリネームする。
+        失敗時はログのみ出して旧名のまま稼働継続。"""
+        # 製品フォルダ
+        for pid, p in list(self._products.items()):
+            current = p.folder_name
+            fallback = pid[5:] if pid.startswith("prod_") else pid
+            desired = _safe_folder_name(p.name, fallback=fallback)
+            peers = {q.folder_name for q in self._products.values() if q.id != pid and q.folder_name}
+            desired = _unique_folder_name(desired, peers)
+            if current == desired:
+                continue
+            old_path = os.path.join(self._dir, current)
+            new_path = os.path.join(self._dir, desired)
+            if not os.path.isdir(old_path) or os.path.exists(new_path):
+                continue
+            try:
+                os.rename(old_path, new_path)
+                p.folder_name = desired
+                self._save_product(p)
+                print(f"[migrate] product folder: {current} -> {desired}")
+            except OSError as e:
+                print(f"[migrate] WARN: failed to rename product {current}: {e}")
+
+        # ROI フォルダ (templates/ と datasets/ 内)
+        for pid, p in self._products.items():
+            updated = False
+            for roi in p.rois:
+                current = roi.folder_name
+                fallback = roi.id[4:] if roi.id.startswith("roi_") else roi.id
+                desired = _safe_folder_name(roi.name, fallback=fallback)
+                peers = {r.folder_name for r in p.rois if r.id != roi.id and r.folder_name}
+                desired = _unique_folder_name(desired, peers)
+                if current == desired:
+                    continue
+                rename_failed = False
+                for sub in ("templates", "datasets"):
+                    sub_dir = os.path.join(self._product_dir(pid), sub)
+                    old_path = os.path.join(sub_dir, current)
+                    new_path = os.path.join(sub_dir, desired)
+                    if not os.path.isdir(old_path):
+                        continue  # 何もない、リネーム不要
+                    if os.path.exists(new_path):
+                        continue  # 新名のフォルダが既にある、衝突回避のためスキップ
+                    try:
+                        os.rename(old_path, new_path)
+                        print(f"[migrate] ROI folder: {sub}/{current} -> {sub}/{desired}")
+                    except OSError as e:
+                        rename_failed = True
+                        print(f"[migrate] WARN: failed to rename ROI {sub}/{current}: {e}")
+                # 既存フォルダが無くても / 全て成功すれば、folder_name を新名に更新
+                if not rename_failed:
+                    roi.folder_name = desired
+                    updated = True
+            if updated:
+                self._save_product(p)
+
     def _load_templates(self, product_id: str):
         """テンプレートを読み込む。ROIごとにサブディレクトリまたは単一ファイル。
-        新形式: templates/{roi_id}/001.jpg, 002.jpg, ...
+        新形式: templates/{roi_folder}/001.jpg, 002.jpg, ...
         旧形式: templates/{roi_id}.jpg（互換用、リスト[1枚]として扱う）
-        """
+        内部辞書のキーは常に roi.id を使う。フォルダ名は folder_name。"""
         tpl_dir = self.templates_dir(product_id)
         if not os.path.isdir(tpl_dir):
             return
         self._templates.setdefault(product_id, {})
+        # folder_name または id → roi_id のマップ（旧データ互換）
+        p = self._products.get(product_id)
+        folder_to_id: dict[str, str] = {}
+        if p:
+            for roi in p.rois:
+                if roi.folder_name:
+                    folder_to_id[roi.folder_name] = roi.id
+                folder_to_id[roi.id] = roi.id
         for entry in os.listdir(tpl_dir):
             entry_path = os.path.join(tpl_dir, entry)
             if os.path.isdir(entry_path):
-                # 新形式: ディレクトリ内の全JPG
-                roi_id = entry
+                roi_id = folder_to_id.get(entry, entry)
                 imgs = []
                 for f in sorted(os.listdir(entry_path)):
                     if f.endswith(".jpg"):
@@ -265,7 +413,11 @@ class ProductManager:
     def create(self, name: str, description: str = "") -> dict:
         with self._lock:
             pid = f"prod_{uuid.uuid4().hex[:8]}"
-            p = Product(id=pid, name=name, description=description)
+            # フォルダ名は name をサニタイズ + 既存製品との衝突回避
+            folder = _safe_folder_name(name, fallback=pid[5:])
+            peers = {q.folder_name for q in self._products.values() if q.folder_name}
+            folder = _unique_folder_name(folder, peers)
+            p = Product(id=pid, name=name, description=description, folder_name=folder)
             self._products[pid] = p
             # サブディレクトリ作成
             for sub in [self.templates_dir(pid), self.datasets_dir(pid), self.models_dir(pid)]:
@@ -286,13 +438,13 @@ class ProductManager:
             return p.to_dict()
 
     def delete(self, product_id: str) -> bool:
-        import shutil
         with self._lock:
             if product_id not in self._products:
                 return False
+            # folder_name 解決が self._products に依存するので、削除前にパスを確定
+            pdir = self._product_dir(product_id)
             del self._products[product_id]
             self._templates.pop(product_id, None)
-            pdir = self._product_dir(product_id)
             _safe_delete(pdir, self._dir)
             return True
 
@@ -307,7 +459,11 @@ class ProductManager:
             roi_id = f"roi_{uuid.uuid4().hex[:6]}"
             if color is None:
                 color = ROI_COLORS[len(p.rois) % len(ROI_COLORS)]
-            roi = ROIDefinition(id=roi_id, name=name, x=x, y=y, w=w, h=h, color=color)
+            folder = _safe_folder_name(name, fallback=roi_id[4:])
+            peers = {r.folder_name for r in p.rois if r.folder_name}
+            folder = _unique_folder_name(folder, peers)
+            roi = ROIDefinition(id=roi_id, name=name, x=x, y=y, w=w, h=h,
+                                color=color, folder_name=folder)
             p.rois.append(roi)
             p.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
             self._save_product(p)
@@ -340,13 +496,20 @@ class ProductManager:
                 return False
             for i, r in enumerate(p.rois):
                 if r.id == roi_id:
+                    # 削除前にパスを確定（_roi_folder が self._products に依存）
+                    roi_tpl_dir = self.roi_templates_dir(product_id, roi_id)
+                    legacy_tpl = os.path.join(self.templates_dir(product_id), f"{roi_id}.jpg")
                     p.rois.pop(i)
                     # テンプレートも削除
                     if product_id in self._templates:
                         self._templates[product_id].pop(roi_id, None)
-                    tpl = os.path.join(self.templates_dir(product_id), f"{roi_id}.jpg")
-                    if os.path.exists(tpl):
-                        os.remove(tpl)
+                    if os.path.isdir(roi_tpl_dir):
+                        try:
+                            _safe_delete(roi_tpl_dir, self._dir)
+                        except Exception:
+                            pass
+                    if os.path.exists(legacy_tpl):
+                        os.remove(legacy_tpl)
                     p.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
                     self._save_product(p)
                     return True
@@ -388,7 +551,7 @@ class ProductManager:
             self._templates[product_id][roi_id].append(gray)
 
             # ディスクに保存
-            roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+            roi_tpl_dir = self.roi_templates_dir(product_id, roi_id)
             os.makedirs(roi_tpl_dir, exist_ok=True)
             idx = len(os.listdir(roi_tpl_dir)) + 1
             _imwrite(os.path.join(roi_tpl_dir, f"{idx:03d}.jpg"), gray)
@@ -402,7 +565,7 @@ class ProductManager:
                 return False
             tpls.pop(index)
             # ディスク上のファイルを全部書き直し
-            roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+            roi_tpl_dir = self.roi_templates_dir(product_id, roi_id)
             _safe_delete(roi_tpl_dir, self._dir)
             os.makedirs(roi_tpl_dir, exist_ok=True)
             for i, img in enumerate(tpls):
@@ -416,7 +579,7 @@ class ProductManager:
     def get_template_path(self, product_id: str, roi_id: str, index: int = 0) -> str | None:
         """テンプレート画像のパスを返す。indexで複数対応。"""
         # 新形式
-        roi_tpl_dir = os.path.join(self.templates_dir(product_id), roi_id)
+        roi_tpl_dir = self.roi_templates_dir(product_id, roi_id)
         if os.path.isdir(roi_tpl_dir):
             files = sorted(f for f in os.listdir(roi_tpl_dir) if f.endswith(".jpg"))
             if 0 <= index < len(files):

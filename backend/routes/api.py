@@ -355,17 +355,19 @@ async def dataset_classes(product_id: str, roi_id: str | None = None):
     p = product_manager.get(product_id)
     if not p:
         raise HTTPException(404, "製品が見つかりません")
-    base = product_manager.datasets_dir(product_id)
     if roi_id:
-        base = os.path.join(base, roi_id)
+        base = product_manager.roi_datasets_dir(product_id, roi_id)
+        excluded = set()
+    else:
+        base = product_manager.datasets_dir(product_id)
+        # ROI 専用サブフォルダはクラスとして扱わない（folder_name と id 両方を除外）
+        excluded = product_manager.roi_folder_names(product_id)
     os.makedirs(base, exist_ok=True)
     meta = _load_classes_meta(base)
-    # ROI IDのディレクトリはクラスとして扱わない
-    roi_ids = {r.id for r in p.rois} if not roi_id else set()
     classes = []
     for name in sorted(os.listdir(base)):
         path = os.path.join(base, name)
-        if os.path.isdir(path) and name not in roi_ids and not name.startswith('.'):
+        if os.path.isdir(path) and name not in excluded and not name.startswith('.'):
             count = len([f for f in os.listdir(path)
                         if f.lower().endswith((".jpg", ".jpeg", ".png"))])
             classes.append({
@@ -387,13 +389,11 @@ async def create_class(product_id: str, data: CreateClass):
     p = product_manager.get(product_id)
     if not p:
         raise HTTPException(404, "製品が見つかりません")
-    base = product_manager.datasets_dir(product_id)
-    meta_base = base
     if data.roi_id:
-        meta_base = os.path.join(base, data.roi_id)
-        path = os.path.join(meta_base, data.class_name)
+        meta_base = product_manager.roi_datasets_dir(product_id, data.roi_id)
     else:
-        path = os.path.join(base, data.class_name)
+        meta_base = product_manager.datasets_dir(product_id)
+    path = os.path.join(meta_base, data.class_name)
     if os.path.exists(path):
         raise HTTPException(400, f"クラス「{data.class_name}」は既に存在します")
     os.makedirs(path, exist_ok=True)
@@ -408,23 +408,18 @@ async def create_class(product_id: str, data: CreateClass):
 async def delete_class(product_id: str, class_name: str, roi_id: str | None = None):
     # ROIディレクトリの誤削除防止
     p = product_manager.get(product_id)
-    if p:
-        roi_ids = {r.id for r in p.rois}
-        if class_name in roi_ids:
-            raise HTTPException(400, "ROIデータディレクトリは削除できません")
+    if p and class_name in product_manager.roi_folder_names(product_id):
+        raise HTTPException(400, "ROIデータディレクトリは削除できません")
 
-    base = product_manager.datasets_dir(product_id)
-    meta_base = base
     if roi_id:
-        meta_base = os.path.join(base, roi_id)
-        path = os.path.join(meta_base, class_name)
+        meta_base = product_manager.roi_datasets_dir(product_id, roi_id)
     else:
-        path = os.path.join(base, class_name)
+        meta_base = product_manager.datasets_dir(product_id)
+    path = os.path.join(meta_base, class_name)
     if not os.path.exists(path):
         raise HTTPException(404, f"クラス「{class_name}」が見つかりません")
     # products配下のパスのみ削除を許可
     abs_path = os.path.abspath(path)
-    abs_base = os.path.abspath(product_manager.datasets_dir(product_id))
     if not abs_path.startswith(os.path.abspath(product_manager._dir) + os.sep):
         raise HTTPException(400, "安全でないパス")
     send2trash.send2trash(abs_path)
@@ -448,11 +443,10 @@ async def capture_image(product_id: str, data: CaptureRequest):
     if not p:
         raise HTTPException(404, "製品が見つかりません")
 
-    base = product_manager.datasets_dir(product_id)
     if data.roi_id:
-        class_dir = os.path.join(base, data.roi_id, data.class_name)
+        class_dir = os.path.join(product_manager.roi_datasets_dir(product_id, data.roi_id), data.class_name)
     else:
-        class_dir = os.path.join(base, data.class_name)
+        class_dir = os.path.join(product_manager.datasets_dir(product_id), data.class_name)
     os.makedirs(class_dir, exist_ok=True)
 
     frame = camera.read_frame()
@@ -479,11 +473,10 @@ async def capture_image(product_id: str, data: CaptureRequest):
 
 @router.get("/products/{product_id}/dataset/images/{class_name}")
 async def list_images(product_id: str, class_name: str, roi_id: str | None = None):
-    base = product_manager.datasets_dir(product_id)
     if roi_id:
-        class_dir = os.path.join(base, roi_id, class_name)
+        class_dir = os.path.join(product_manager.roi_datasets_dir(product_id, roi_id), class_name)
     else:
-        class_dir = os.path.join(base, class_name)
+        class_dir = os.path.join(product_manager.datasets_dir(product_id), class_name)
     if not os.path.exists(class_dir):
         raise HTTPException(404, f"クラス「{class_name}」が見つかりません")
     images = sorted(
@@ -502,11 +495,11 @@ class DeleteImage(BaseModel):
 
 @router.post("/products/{product_id}/dataset/delete-image")
 async def delete_image(product_id: str, data: DeleteImage):
-    base = product_manager.datasets_dir(product_id)
     if data.roi_id:
-        filepath = os.path.join(base, data.roi_id, data.class_name, data.filename)
+        filepath = os.path.join(product_manager.roi_datasets_dir(product_id, data.roi_id),
+                                data.class_name, data.filename)
     else:
-        filepath = os.path.join(base, data.class_name, data.filename)
+        filepath = os.path.join(product_manager.datasets_dir(product_id), data.class_name, data.filename)
     if not os.path.exists(filepath):
         raise HTTPException(404, "画像が見つかりません")
     os.remove(filepath)
@@ -516,11 +509,10 @@ async def delete_image(product_id: str, data: DeleteImage):
 @router.get("/products/{product_id}/dataset/file/{class_name}/{filename}")
 async def serve_dataset_image(product_id: str, class_name: str, filename: str,
                               roi_id: str | None = None):
-    base = product_manager.datasets_dir(product_id)
     if roi_id:
-        filepath = os.path.join(base, roi_id, class_name, filename)
+        filepath = os.path.join(product_manager.roi_datasets_dir(product_id, roi_id), class_name, filename)
     else:
-        filepath = os.path.join(base, class_name, filename)
+        filepath = os.path.join(product_manager.datasets_dir(product_id), class_name, filename)
     if not os.path.exists(filepath):
         raise HTTPException(404, "画像が見つかりません")
     return FileResponse(filepath, media_type="image/jpeg")
@@ -540,11 +532,10 @@ async def import_folder(product_id: str, data: ImportFolder):
     if not p:
         raise HTTPException(404, "製品が見つかりません")
 
-    base = product_manager.datasets_dir(product_id)
     if data.roi_id:
-        class_dir = os.path.join(base, data.roi_id, data.class_name)
+        class_dir = os.path.join(product_manager.roi_datasets_dir(product_id, data.roi_id), data.class_name)
     else:
-        class_dir = os.path.join(base, data.class_name)
+        class_dir = os.path.join(product_manager.datasets_dir(product_id), data.class_name)
     os.makedirs(class_dir, exist_ok=True)
 
     result = {"folder": None}
@@ -671,6 +662,23 @@ async def model_status():
 
 # ─── 学習 ────────────────────────────────────────────────
 
+def _unique_model_name(product_id: str, base: str) -> str:
+    """モデル名が既存の .keras / _meta.json と衝突するなら _2, _3, ... を付与。"""
+    mdir = product_manager.models_dir(product_id)
+    if not os.path.isdir(mdir):
+        return base
+    existing = set(os.listdir(mdir))
+    def collides(n: str) -> bool:
+        return f"{n}.keras" in existing or f"{n}_meta.json" in existing
+    if not collides(base):
+        return base
+    for i in range(2, 1000):
+        cand = f"{base}_{i}"
+        if not collides(cand):
+            return cand
+    return f"{base}_{int(time.time())}"
+
+
 class TrainingParams(BaseModel):
     model_name: str = "model_v1"
     roi_id: str | None = None
@@ -692,8 +700,11 @@ async def start_training(product_id: str, params: TrainingParams):
         raise HTTPException(404, "製品が見つかりません")
     if trainer.is_running():
         raise HTTPException(400, "学習は既に実行中です")
-    trainer.start(product_id, params.model_dump())
-    return {"message": "学習を開始しました", "params": params.model_dump()}
+    # 既存モデルを上書きしないよう衝突時に _2, _3, ... を付与
+    data = params.model_dump()
+    data["model_name"] = _unique_model_name(product_id, data.get("model_name") or "model_v1")
+    trainer.start(product_id, data)
+    return {"message": "学習を開始しました", "params": data}
 
 
 class BatchTrainingParams(BaseModel):
@@ -720,19 +731,22 @@ async def start_batch_training(product_id: str, params: BatchTrainingParams):
         raise HTTPException(400, "ROIが定義されていません")
 
     # データセットが存在するROIのみ対象
-    base_ds = product_manager.datasets_dir(product_id)
+    # バックボーンをモデル名に含めて、別backboneで再学習しても上書きされないようにする
+    backbone_suffix = params.backbone if params.backbone and params.backbone != "mobilenetv2" else ""
     roi_jobs = []
     for roi in p.rois:
-        roi_ds = os.path.join(base_ds, roi.id)
+        roi_ds = product_manager.roi_datasets_dir(product_id, roi.id)
         if not os.path.isdir(roi_ds):
             continue
         class_dirs = [d for d in os.listdir(roi_ds)
                       if os.path.isdir(os.path.join(roi_ds, d))]
         if len(class_dirs) >= 2:
+            base = f"{roi.name}_{backbone_suffix}" if backbone_suffix else roi.name
+            model_name = _unique_model_name(product_id, base)
             roi_jobs.append({
                 "roi_id": roi.id,
                 "roi_name": roi.name,
-                "model_name": roi.name,
+                "model_name": model_name,
             })
 
     if not roi_jobs:
@@ -762,8 +776,8 @@ async def augmentation_preview(product_id: str, req: AugPreviewRequest):
     import random
     from backend.training import _build_augmentation_layers
 
-    base_ds = product_manager.datasets_dir(product_id)
-    dataset_dir = os.path.join(base_ds, req.roi_id) if req.roi_id else base_ds
+    dataset_dir = (product_manager.roi_datasets_dir(product_id, req.roi_id)
+                   if req.roi_id else product_manager.datasets_dir(product_id))
 
     if not os.path.isdir(dataset_dir):
         raise HTTPException(404, "データセットが見つかりません")

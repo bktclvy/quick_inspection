@@ -35,16 +35,23 @@ export function TrainingStepNew() {
 
   const [name, setName] = useState('model_v1')
   const [roiId, setRoiId] = useState<string | null>(null)
+  const nameEditedRef = useRef(false)
 
-  // ROI選択時にモデル名を自動設定
+  // ROI選択時にモデル名を自動設定（ユーザーが手動編集していなければ）
   const handleRoiChange = (id: string | null) => {
     setRoiId(id)
+    if (nameEditedRef.current) return  // 手動編集済なら触らない
     if (id) {
       const roi = rois.find((r) => r.id === id)
       if (roi) setName(roi.name)
     } else {
       setName('model_v1')
     }
+  }
+
+  const handleNameChange = (v: string) => {
+    setName(v)
+    nameEditedRef.current = true
   }
   const [epochs, setEpochs] = useState(20)
   const [lr, setLr] = useState(0.001)
@@ -139,14 +146,14 @@ export function TrainingStepNew() {
               </select>
             </Field>
             <Field label="モデル名">
-              <input value={name} onChange={(e) => setName(e.target.value)} style={inpStyle} />
+              <input value={name} onChange={(e) => handleNameChange(e.target.value)} style={inpStyle} />
             </Field>
             <Field label="バックボーン">
               <select value={backbone} onChange={(e) => setBackbone(e.target.value as Backbone)} style={selStyle}>
                 <option value="mobilenetv2">MobileNetV2（軽量・高速）</option>
-                <option value="efficientnetb0">EfficientNetB0（バランス）</option>
-                <option value="efficientnetb3">EfficientNetB3（高精度・推奨300px）</option>
-                <option value="efficientnetv2s">EfficientNetV2S（最高精度・重い）</option>
+                <option value="efficientnetv2b0">EfficientNetV2-B0（バランス）</option>
+                <option value="efficientnetv2b3">EfficientNetV2-B3（高精度・推奨300px）</option>
+                <option value="efficientnetv2s">EfficientNetV2-S（最高精度・重い）</option>
               </select>
             </Field>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

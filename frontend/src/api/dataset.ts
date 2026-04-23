@@ -32,4 +32,7 @@ export const datasetApi = {
     api(`/products/${productId}/dataset/import-folder`).post(
       roiId ? { roi_id: roiId } : undefined,
     ),
+
+  openFolder: (productId: string) =>
+    api<{ path: string }>(`/open-folder/datasets`).get({ product_id: productId }),
 }

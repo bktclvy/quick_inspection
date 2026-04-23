@@ -210,8 +210,8 @@ class Trainer:
 
             # データセットルートを決定（製品スコープ、オプションでROIスコープ）
             roi_id = params.get("roi_id")
-            base_ds = product_manager.datasets_dir(product_id)
-            dataset_dir = os.path.join(base_ds, roi_id) if roi_id else base_ds
+            dataset_dir = (product_manager.roi_datasets_dir(product_id, roi_id)
+                           if roi_id else product_manager.datasets_dir(product_id))
 
             # モデル出力ディレクトリを決定（製品スコープ）
             models_dir = product_manager.models_dir(product_id)
@@ -307,10 +307,10 @@ class Trainer:
 
             # モデル構築
             _backbone_map = {
-                "mobilenetv2":   (tf.keras.applications.MobileNetV2,   True),
-                "efficientnetb0": (tf.keras.applications.EfficientNetB0, False),
-                "efficientnetb3": (tf.keras.applications.EfficientNetB3, False),
-                "efficientnetv2s": (tf.keras.applications.EfficientNetV2S, False),
+                "mobilenetv2":      (tf.keras.applications.MobileNetV2,      True),
+                "efficientnetv2b0": (tf.keras.applications.EfficientNetV2B0, False),
+                "efficientnetv2b3": (tf.keras.applications.EfficientNetV2B3, False),
+                "efficientnetv2s":  (tf.keras.applications.EfficientNetV2S,  False),
             }
             BackboneCls, needs_rescale = _backbone_map.get(backbone, _backbone_map["mobilenetv2"])
 

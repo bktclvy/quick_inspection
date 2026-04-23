@@ -88,6 +88,12 @@ export function DatasetStepNew() {
     } catch { Toast.error('インポートに失敗しました') }
   }
 
+  const openFolder = async () => {
+    if (!productId) return
+    try { await datasetApi.openFolder(productId) }
+    catch { Toast.error('フォルダを開けませんでした') }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -124,6 +130,9 @@ export function DatasetStepNew() {
           </button>
           <button onClick={importFolder} style={ghostBtnStyle}>
             フォルダから取込
+          </button>
+          <button onClick={openFolder} style={ghostBtnStyle} disabled={!productId}>
+            保存先を開く
           </button>
         </div>
       </Panel>

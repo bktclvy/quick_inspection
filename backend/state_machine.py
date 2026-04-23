@@ -334,15 +334,18 @@ class InspectionStateMachine:
 
     # ── AI トリガーモード ─────────────────────────────────
 
-    def process_frame_ai_trigger(self, roi_results: list[dict], bg_match: float | None) -> dict:
+    def process_frame_ai_trigger(self, roi_results: list[dict], bg_match: float | None,
+                                  frame_diff: float = 0.0) -> dict:
         """AIトリガーモード: モデル推論結果でトリガーを判断する。
-        ROIのいずれかが 'uninspectable' を返す間はトリガーしない。"""
+        ROIのいずれかが 'uninspectable' を返す、または画像が不安定な間はトリガーしない。"""
         with self._lock:
-            return self._process_ai_trigger_internal(roi_results, bg_match)
+            return self._process_ai_trigger_internal(roi_results, bg_match, frame_diff)
 
-    def _process_ai_trigger_internal(self, roi_results: list[dict], bg_match: float | None) -> dict:
+    def _process_ai_trigger_internal(self, roi_results: list[dict], bg_match: float | None,
+                                      frame_diff: float) -> dict:
         counters = self._get_counters_internal()
-        diag = {"bg_match": round(bg_match, 3) if bg_match is not None else None}
+        diag = {"bg_match": round(bg_match, 3) if bg_match is not None else None,
+                "frame_diff": round(frame_diff, 1)}
 
         if self.state == InspectionState.IDLE:
             has_uninspectable = any(
@@ -350,7 +353,8 @@ class InspectionStateMachine:
                 for r in roi_results if "error" not in r
             )
             has_error = any("error" in r for r in roi_results)
-            if not roi_results or has_uninspectable or has_error:
+            not_stable = frame_diff > self.stability_threshold
+            if not roi_results or has_uninspectable or has_error or not_stable:
                 self._ai_trigger_count = 0
                 return {"state": "idle", "trigger_mode": "ai", "counters": counters,
                         "trigger_count": 0, "trigger_required": self.trigger_frames, **diag}

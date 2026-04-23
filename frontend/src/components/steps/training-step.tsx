@@ -12,7 +12,7 @@ import { useTrainingWS } from '@/hooks/useTrainingWS'
 import { trainingApi } from '@/api/training'
 import { productsApi } from '@/api/products'
 import { Toast } from '@/components/layout/Toast'
-import type { AugmentationConfig } from '@/types'
+import type { AugmentationConfig, Backbone } from '@/types'
 
 Chart.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 
@@ -51,6 +51,7 @@ export function TrainingStepNew() {
   const [bs, setBs] = useState(32)
   const [vs, setVs] = useState(0.2)
   const [imgSize, setImgSize] = useState(224)
+  const [backbone, setBackbone] = useState<Backbone>('mobilenetv2')
   const [freeze, setFreeze] = useState(true)
   const [earlyStop, setEarlyStop] = useState(5)  // 0=無効
   const [augEnabled, setAugEnabled] = useState(true)
@@ -71,6 +72,7 @@ export function TrainingStepNew() {
       if (cfg.training_bs != null) setBs(cfg.training_bs as number)
       if (cfg.training_vs != null) setVs(cfg.training_vs as number)
       if (cfg.training_img_size != null) setImgSize(cfg.training_img_size as number)
+      if (cfg.training_backbone != null) setBackbone(cfg.training_backbone as Backbone)
       if (cfg.training_freeze != null) setFreeze(cfg.training_freeze as boolean)
       if (cfg.training_early_stop != null) setEarlyStop(cfg.training_early_stop as number)
       if (cfg.training_aug_enabled != null) setAugEnabled(cfg.training_aug_enabled as boolean)
@@ -82,6 +84,7 @@ export function TrainingStepNew() {
   const saveTrainingConfig = useCallback(() => {
     if (!productId) return
     productsApi.saveConfig(productId, {
+      training_backbone: backbone,
       training_epochs: epochs, training_lr: lr, training_bs: bs,
       training_vs: vs, training_img_size: imgSize, training_freeze: freeze,
       training_early_stop: earlyStop, training_aug_enabled: augEnabled,
@@ -93,13 +96,13 @@ export function TrainingStepNew() {
 
   const start = async () => {
     if (!productId) return; resetCharts(); saveTrainingConfig()
-    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
+    try { await trainingApi.start(productId, { model_name: name, roi_id: roiId, epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop, backbone }) }
     catch (e) { Toast.error(`学習開始に失敗: ${e}`) }
   }
 
   const startBatch = async () => {
     if (!productId) return; resetCharts(); saveTrainingConfig()
-    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop }) }
+    try { await trainingApi.startBatch(productId, { epochs, learning_rate: lr, batch_size: bs, validation_split: vs, image_size: imgSize, freeze_base: freeze, augmentation: augEnabled ? aug : false, early_stop_patience: earlyStop, backbone }) }
     catch (e) { Toast.error(`一括学習に失敗: ${e}`) }
   }
 
@@ -137,6 +140,14 @@ export function TrainingStepNew() {
             </Field>
             <Field label="モデル名">
               <input value={name} onChange={(e) => setName(e.target.value)} style={inpStyle} />
+            </Field>
+            <Field label="バックボーン">
+              <select value={backbone} onChange={(e) => setBackbone(e.target.value as Backbone)} style={selStyle}>
+                <option value="mobilenetv2">MobileNetV2（軽量・高速）</option>
+                <option value="efficientnetb0">EfficientNetB0（バランス）</option>
+                <option value="efficientnetb3">EfficientNetB3（高精度・推奨300px）</option>
+                <option value="efficientnetv2s">EfficientNetV2S（最高精度・重い）</option>
+              </select>
             </Field>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <Field label="エポック">

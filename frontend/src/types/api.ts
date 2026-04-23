@@ -54,6 +54,7 @@ export interface TrainingStartReq {
   freeze_base?: boolean
   augmentation?: import('.').AugmentationConfig | boolean
   early_stop_patience?: number
+  backbone?: import('.').Backbone
 }
 
 export interface BatchTrainingStartReq {
@@ -65,6 +66,7 @@ export interface BatchTrainingStartReq {
   freeze_base?: boolean
   augmentation?: import('.').AugmentationConfig | boolean
   early_stop_patience?: number
+  backbone?: import('.').Backbone
 }
 
 export interface AugPreviewReq {

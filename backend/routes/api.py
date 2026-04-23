@@ -625,8 +625,6 @@ async def predict_once(product_id: str):
     p = product_manager.get(product_id)
     if not p:
         raise HTTPException(404, "製品が見つかりません")
-    if not p.rois:
-        raise HTTPException(400, "ROIが定義されていません")
 
     frame = camera.read_frame()
     if frame is None:
@@ -634,8 +632,20 @@ async def predict_once(product_id: str):
 
     # 割り当て済みROIだけ推論
     roi_dicts = [{s: getattr(r, s) for s in r.__slots__} for r in p.rois if r.model_name]
+
+    # ROIにモデル未割当の場合、保存済みモデルで全フレーム推論
     if not roi_dicts:
-        raise HTTPException(400, "モデルが割り当てられたROIがありません")
+        models = product_manager.list_models(product_id)
+        if not models:
+            raise HTTPException(400, "モデルがありません。先に学習を実行してください")
+        first_model = models[0]["model_name"]
+        roi_dicts = [{
+            "id": "__full_frame__",
+            "name": "全体",
+            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
+            "model_name": first_model,
+            "color": "#6366f1",
+        }]
 
     # 必要なモデルをロード
     models_dir = product_manager.models_dir(product_id)
@@ -671,6 +681,7 @@ class TrainingParams(BaseModel):
     image_size: int = config.DEFAULT_IMAGE_SIZE
     freeze_base: bool = True
     augmentation: dict | bool = True
+    backbone: str = "mobilenetv2"
 
 
 @router.post("/products/{product_id}/training/start")
@@ -693,6 +704,7 @@ class BatchTrainingParams(BaseModel):
     image_size: int = config.DEFAULT_IMAGE_SIZE
     freeze_base: bool = True
     augmentation: dict | bool = True
+    backbone: str = "mobilenetv2"
 
 
 @router.post("/products/{product_id}/training/start-batch")
@@ -890,6 +902,8 @@ async def get_product_config(product_id: str):
 
 
 class InspectionConfig(BaseModel):
+    model_config = {"extra": "allow"}
+
     match_threshold: float | None = None
     trigger_frames: int | None = None
     removal_threshold: float | None = None

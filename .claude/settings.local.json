@@ -39,7 +39,10 @@
       "Bash(venv/Scripts/pip install:*)",
       "Bash(venv/Scripts/pyinstaller quick_inspection.spec --noconfirm)",
       "Bash(ls -la C:\\\\Users\\\\bktcl\\\\quick_inspection/*.py)",
-      "Bash(pyinstaller:*)"
+      "Bash(pyinstaller:*)",
+      "Bash(ls:*)",
+      "Bash(netstat -ano)",
+      "Bash(explorer.exe C:\\\\Users\\\\bktcl\\\\quick_inspection\\\\build_output\\\\QuickInspection:*)"
     ]
   }
 }

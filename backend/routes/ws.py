@@ -196,6 +196,12 @@ async def inspection_stream(websocket: WebSocket):
             if getattr(_state_machine, 'trigger_mode', 'auto') == 'ai':
                 t_frame_ai = time.monotonic()
                 raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if prev_gray is None:
+                    frame_diff_ai = 0.0
+                else:
+                    frame_diff_ai = float(cv2.absdiff(raw_gray, prev_gray).mean())
+                prev_gray = raw_gray
+
                 bg_match = await loop.run_in_executor(
                     None, product_manager.background_match_score_gray,
                     _active_product_id, raw_gray)
@@ -209,7 +215,7 @@ async def inspection_stream(websocket: WebSocket):
                     t_infer_ms = int((time.monotonic() - t0) * 1000)
 
                 prev_state = _state_machine.state
-                result = _state_machine.process_frame_ai_trigger(roi_results_ai, bg_match)
+                result = _state_machine.process_frame_ai_trigger(roi_results_ai, bg_match, frame_diff_ai)
 
                 if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
                     camera.freeze_frame(frame)

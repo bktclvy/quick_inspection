@@ -94,6 +94,8 @@ export interface DatasetClass {
 
 /* ── Training ─────────────────────────────────────── */
 
+export type Backbone = 'mobilenetv2' | 'efficientnetb0' | 'efficientnetb3' | 'efficientnetv2s'
+
 export interface TrainingParams {
   model_name: string
   roi_id: string | null
@@ -105,6 +107,7 @@ export interface TrainingParams {
   freeze_base: boolean
   augmentation: AugmentationConfig | boolean
   early_stop_patience?: number
+  backbone?: Backbone
 }
 
 export interface AugmentationConfig {

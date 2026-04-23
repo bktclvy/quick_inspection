@@ -206,6 +206,7 @@ class Trainer:
             freeze_base = params.get("freeze_base", True)
             augmentation = params.get("augmentation", True)
             model_name = params.get("model_name", "model_v1")
+            backbone = params.get("backbone", "mobilenetv2")
 
             # データセットルートを決定（製品スコープ、オプションでROIスコープ）
             roi_id = params.get("roi_id")
@@ -277,7 +278,7 @@ class Trainer:
                 ])
 
             log.info("=" * 60)
-            log.info("学習開始: %s (product=%s, roi=%s)", model_name, product_id, roi_id or "全体")
+            log.info("学習開始: %s (product=%s, roi=%s, backbone=%s)", model_name, product_id, roi_id or "全体", backbone)
             log.info("データセット: %s", dataset_dir)
             for cn, cnt in class_counts.items():
                 log.info("  %-20s %d 枚", cn, cnt)
@@ -305,20 +306,26 @@ class Trainer:
             val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
 
             # モデル構築
-            base_model = tf.keras.applications.MobileNetV2(
+            _backbone_map = {
+                "mobilenetv2":   (tf.keras.applications.MobileNetV2,   True),
+                "efficientnetb0": (tf.keras.applications.EfficientNetB0, False),
+                "efficientnetb3": (tf.keras.applications.EfficientNetB3, False),
+                "efficientnetv2s": (tf.keras.applications.EfficientNetV2S, False),
+            }
+            BackboneCls, needs_rescale = _backbone_map.get(backbone, _backbone_map["mobilenetv2"])
+
+            base_model = BackboneCls(
                 input_shape=(image_size, image_size, 3),
                 include_top=False,
                 weights="imagenet",
             )
             base_model.trainable = not freeze_base
 
-            layers = [
-                tf.keras.layers.Rescaling(1.0 / 127.5, offset=-1),
-            ]
+            # MobileNetV2 は [-1,1] に正規化が必要、EfficientNet 系は内部に前処理を持つ
+            preprocess_layers = [tf.keras.layers.Rescaling(1.0 / 127.5, offset=-1)] if needs_rescale else []
 
             aug_layers = _build_augmentation_layers(tf, augmentation)
-            if aug_layers:
-                layers = aug_layers + layers
+            layers = aug_layers + preprocess_layers
 
             model = tf.keras.Sequential(
                 layers + [
@@ -379,6 +386,16 @@ class Trainer:
             # コールバック
             cb_list = [ProgressCallback()]
 
+            # ベストモデル保存（val_accuracyが改善したエポックのみ）
+            model_path = os.path.join(models_dir, f"{model_name}.keras")
+            cb_list.append(tf.keras.callbacks.ModelCheckpoint(
+                model_path,
+                monitor="val_accuracy",
+                save_best_only=True,
+                mode="max",
+                verbose=0,
+            ))
+
             # アーリーストップ
             early_stop_patience = params.get("early_stop_patience", 0)
             if early_stop_patience > 0:
@@ -405,10 +422,6 @@ class Trainer:
                 self._broadcast({"type": "status", "state": "stopped"})
                 return
 
-            # モデルを製品のmodelsディレクトリに保存
-            model_path = os.path.join(models_dir, f"{model_name}.keras")
-            model.save(model_path)
-
             # メタデータ保存
             hist = history.history
             best_val_acc = max(hist.get("val_accuracy", [0]))
@@ -416,6 +429,7 @@ class Trainer:
                 "model_name": model_name,
                 "product_id": product_id,
                 "roi_id": roi_id,
+                "backbone": backbone,
                 "class_names": class_names,
                 "class_judgments": class_judgments,
                 "num_classes": num_classes,

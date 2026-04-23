@@ -8,6 +8,7 @@ import { useTrainingStore } from '@/stores/trainingStore'
 import { productsApi } from '@/api/products'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { Toast } from '@/components/layout/Toast'
+import { ApiError } from '@/api/client'
 import type { ROIResult } from '@/types'
 
 interface Props {
@@ -41,7 +42,10 @@ export function AssignStepNew({ onTestResults }: Props) {
       setTestResults(results)
       onTestResults?.(results)
       Toast.success('テスト完了')
-    } catch { Toast.error('テストに失敗しました') }
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : 'テストに失敗しました'
+      Toast.error(msg)
+    }
   }, [productId])
 
   useKeyboard('Space', handleTest, true)

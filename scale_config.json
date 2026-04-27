@@ -1,0 +1,11 @@
+{
+  "port": "COM9",
+  "baudrate": 9600,
+  "data_bits": 7,
+  "parity": "E",
+  "stop_bits": 1,
+  "read_timeout_ms": 500,
+  "stability_timeout_ms": 3000,
+  "tare_command": "Z\r\n",
+  "enabled": true
+}

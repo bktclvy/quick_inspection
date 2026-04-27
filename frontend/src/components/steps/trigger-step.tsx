@@ -288,16 +288,22 @@ export function TriggerStep({ onStartDrawing, drawMode }: Props) {
           </div>
           <div>
             <label style={paramLabel}>トリガーフレーム数</label>
-            <input type="number" min={1} max={30}
-              value={config.trigger_frames as number ?? 3}
-              onChange={(e) => saveConfig({ trigger_frames: +e.target.value })}
+            <input
+              key={config.trigger_frames as number ?? 3}
+              type="number" min={1} max={30}
+              defaultValue={config.trigger_frames as number ?? 3}
+              onBlur={(e) => { const n = parseInt(e.target.value, 10); saveConfig({ trigger_frames: isNaN(n) ? 3 : Math.max(1, Math.min(30, n)) }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               style={numInput} />
           </div>
           <div>
             <label style={paramLabel}>安定フレーム数</label>
-            <input type="number" min={1} max={30}
-              value={config.stability_frames as number ?? 8}
-              onChange={(e) => saveConfig({ stability_frames: +e.target.value })}
+            <input
+              key={config.stability_frames as number ?? 8}
+              type="number" min={1} max={30}
+              defaultValue={config.stability_frames as number ?? 8}
+              onBlur={(e) => { const n = parseInt(e.target.value, 10); saveConfig({ stability_frames: isNaN(n) ? 8 : Math.max(1, Math.min(30, n)) }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               style={numInput} />
           </div>
           <div>
@@ -312,9 +318,12 @@ export function TriggerStep({ onStartDrawing, drawMode }: Props) {
           </div>
           <div>
             <label style={paramLabel}>取出しフレーム数</label>
-            <input type="number" min={1} max={30}
-              value={config.removal_frames as number ?? 3}
-              onChange={(e) => saveConfig({ removal_frames: +e.target.value })}
+            <input
+              key={config.removal_frames as number ?? 3}
+              type="number" min={1} max={30}
+              defaultValue={config.removal_frames as number ?? 3}
+              onBlur={(e) => { const n = parseInt(e.target.value, 10); saveConfig({ removal_frames: isNaN(n) ? 3 : Math.max(1, Math.min(30, n)) }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               style={numInput} />
           </div>
         </div>

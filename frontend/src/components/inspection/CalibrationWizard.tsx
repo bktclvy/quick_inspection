@@ -1,25 +1,35 @@
 /**
  * CalibrationWizard — 検査開始前のキャリブレーションフロー
  *
- * 3ステップ:
- *   1. 背景登録 — 製品がない状態を撮影
- *   2. 製品登録 — トリガーテンプレートを再撮影
- *   3. テスト検査 — NG/OK品で判定確認
+ * ステップはトリガーモードで可変:
+ *   manual            → 背景 → テスト
+ *   auto_background   → 背景 → テスト
+ *   auto_template     → 背景 → 製品登録 → テスト
+ *   ai                → テストのみ
+ *
+ * 各撮影ステップでは既存データを「そのまま使う」選択肢も出す。
  */
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useCalibrationStore } from '@/stores/calibrationStore'
+import type { CalibStepId } from '@/stores/calibrationStore'
 import { useInspectionStore } from '@/stores/inspectionStore'
 import { useAppStore } from '@/stores/appStore'
 import { productsApi } from '@/api/products'
 import { CameraFeed } from '@/components/camera/CameraFeed'
+import { useKeyboard } from '@/hooks/useKeyboard'
 
-const STEPS = ['背景登録', '製品登録', 'テスト検査'] as const
+const STEP_LABEL: Record<CalibStepId, string> = {
+  bg: '背景',
+  template: '製品登録',
+  test: 'テスト',
+}
 
 export function CalibrationWizard() {
   const isOpen = useCalibrationStore((s) => s.isOpen)
   const productId = useCalibrationStore((s) => s.productId)
+  const steps = useCalibrationStore((s) => s.steps)
   const step = useCalibrationStore((s) => s.currentStep)
   const close = useCalibrationStore((s) => s.close)
 
@@ -32,6 +42,8 @@ export function CalibrationWizard() {
   }, [productId, close, startInspection])
 
   if (!isOpen || !productId) return null
+
+  const currentId = steps[step]
 
   return createPortal(
     <div style={{
@@ -52,7 +64,7 @@ export function CalibrationWizard() {
         animation: 'calibPop 0.3s ease',
       }}>
         {/* Progress Header */}
-        <ProgressHeader step={step} onClose={close} />
+        <ProgressHeader steps={steps} step={step} onClose={close} />
 
         {/* Content */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', padding: 20, gap: 20 }}>
@@ -65,14 +77,14 @@ export function CalibrationWizard() {
             position: 'relative',
           }}>
             <CameraFeed />
-            {step === 1 && <TriggerOverlay />}
+            {currentId === 'template' && <TriggerOverlay />}
           </div>
 
           {/* Instructions */}
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-            {step === 0 && <BackgroundStep productId={productId} />}
-            {step === 1 && <ProductStep productId={productId} />}
-            {step === 2 && <TestStep onComplete={handleComplete} />}
+            {currentId === 'bg' && <BackgroundStep productId={productId} />}
+            {currentId === 'template' && <ProductStep productId={productId} />}
+            {currentId === 'test' && <TestStep onComplete={handleComplete} />}
           </div>
         </div>
       </div>
@@ -90,7 +102,7 @@ export function CalibrationWizard() {
 
 /* ── Progress Header ── */
 
-function ProgressHeader({ step, onClose }: { step: number; onClose: () => void }) {
+function ProgressHeader({ steps, step, onClose }: { steps: CalibStepId[]; step: number; onClose: () => void }) {
   return (
     <div style={{
       padding: '20px 28px 16px',
@@ -101,8 +113,8 @@ function ProgressHeader({ step, onClose }: { step: number; onClose: () => void }
         キャリブレーション
       </span>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-        {STEPS.map((label, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {steps.map((id, i) => (
+          <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{
               width: 28, height: 28, borderRadius: 8,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -123,9 +135,9 @@ function ProgressHeader({ step, onClose }: { step: number; onClose: () => void }
               fontSize: 13, fontWeight: i === step ? 700 : 500,
               color: i === step ? '#1a1625' : '#b0a9bc',
             }}>
-              {label}
+              {STEP_LABEL[id]}
             </span>
-            {i < STEPS.length - 1 && (
+            {i < steps.length - 1 && (
               <div style={{
                 width: 40, height: 2, borderRadius: 1,
                 background: i < step ? '#10b981' : '#ebe7e2',
@@ -147,13 +159,26 @@ function ProgressHeader({ step, onClose }: { step: number; onClose: () => void }
   )
 }
 
-/* ── Step 1: Background ── */
+/* ── Step: Background ── */
 
 function BackgroundStep({ productId }: { productId: string }) {
-  const bgCaptured = useCalibrationStore((s) => s.bgCaptured)
-  const bgCapturing = useCalibrationStore((s) => s.bgCapturing)
-  const capture = useCalibrationStore((s) => s.captureBackground)
-  const nextStep = useCalibrationStore((s) => s.nextStep)
+  const bgCaptured       = useCalibrationStore((s) => s.bgCaptured)
+  const bgCapturing      = useCalibrationStore((s) => s.bgCapturing)
+  const bgAlreadyExists  = useCalibrationStore((s) => s.bgAlreadyExists)
+  const bgUseExisting    = useCalibrationStore((s) => s.bgUseExisting)
+  const capture          = useCalibrationStore((s) => s.captureBackground)
+  const nextStep         = useCalibrationStore((s) => s.nextStep)
+
+  const proceedable = bgCaptured || bgUseExisting
+  const [_, setBump] = useBump() // 既存プレビューのキャッシュバスター
+
+  // Space キーで撮影
+  const onSpace = useCallback(async () => {
+    if (bgCapturing) return
+    await capture()
+    setBump((v) => v + 1)
+  }, [bgCapturing, capture, setBump])
+  useKeyboard('Space', onSpace, true)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', animation: 'calibSlideIn 0.3s ease' }}>
@@ -165,72 +190,63 @@ function BackgroundStep({ productId }: { productId: string }) {
           </svg>
         </StepIcon>
         <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '16px 0 8px' }}>
-          背景を撮影
+          背景の登録
         </h3>
         <p style={{ fontSize: 14, color: '#7c7494', lineHeight: 1.6, margin: 0 }}>
-          検査台に<strong>何も置かない状態</strong>で撮影してください。
-          この画像を基準として製品の有無を判定します。
+          検査台に<strong>何も置かない状態</strong>で撮影します。製品の有無や取出し検知の基準になります。
+          {bgAlreadyExists && '既に登録済みの場合は「既存のまま使う」で飛ばせます。'}
         </p>
 
+        {/* 既存プレビュー (撮影前) */}
+        {bgAlreadyExists && !bgCaptured && (
+          <ExistingPreview
+            title="登録済みの背景"
+            src={`/api/products/${productId}/background?t=${Date.now()}`}
+            selected={bgUseExisting}
+          />
+        )}
+
         {bgCaptured && (
-          <div style={{
-            marginTop: 20, padding: 16, borderRadius: 12,
-            background: '#f0fdf4', border: '1px solid #bbf7d0',
-            display: 'flex', alignItems: 'center', gap: 12,
-            animation: 'calibSlideIn 0.3s ease',
-          }}>
-            <div style={{
-              width: 80, height: 60, borderRadius: 8, overflow: 'hidden',
-              border: '2px solid #10b981',
-            }}>
-              <img src={`/api/products/${productId}/background?t=${Date.now()}`} alt=""
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{
-                  width: 20, height: 20, borderRadius: '50%', background: '#10b981',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: '#fff', fontSize: 12, animation: 'calibCheck 0.3s ease',
-                }}>✓</div>
-                <span style={{ fontSize: 14, fontWeight: 600, color: '#166534' }}>背景を登録しました</span>
-              </div>
-            </div>
-          </div>
+          <StatusBadge
+            text="新しい背景を登録しました"
+            src={`/api/products/${productId}/background?t=${Date.now()}`}
+          />
         )}
       </StepCard>
 
-      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '16px 0 0' }}>
-        {!bgCaptured ? (
-          <PrimaryButton onClick={capture} disabled={bgCapturing}>
-            {bgCapturing ? '撮影中…' : '撮影する'}
-          </PrimaryButton>
-        ) : (
-          <PrimaryButton onClick={nextStep}>
-            次へ →
-          </PrimaryButton>
-        )}
+      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', padding: '16px 0 0', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10 }}>
+          {/* 再撮影: 既存があるときは「撮り直す」ラベル */}
+          <SecondaryButton onClick={async () => { await capture(); setBump((v) => v + 1) }} disabled={bgCapturing}>
+            {bgCapturing ? '撮影中…' : bgAlreadyExists || bgCaptured ? '撮り直す' : '撮影する'}
+          </SecondaryButton>
+        </div>
+        <PrimaryButton onClick={nextStep} disabled={!proceedable || bgCapturing}>
+          次へ →
+        </PrimaryButton>
       </div>
     </div>
   )
 }
 
-/* ── Step 2: Product Registration ── */
+/* ── Step: Product Registration (テンプレート) ── */
 
 function ProductStep({ productId }: { productId: string }) {
-  const templateCaptured = useCalibrationStore((s) => s.templateCaptured)
-  const templateCapturing = useCalibrationStore((s) => s.templateCapturing)
-  const captureTemplate = useCalibrationStore((s) => s.captureTemplate)
-  const liveScore = useCalibrationStore((s) => s.liveScore)
-  const setLiveScore = useCalibrationStore((s) => s.setLiveScore)
-  const nextStep = useCalibrationStore((s) => s.nextStep)
-  const prevStep = useCalibrationStore((s) => s.prevStep)
+  const templateCaptured      = useCalibrationStore((s) => s.templateCaptured)
+  const templateCapturing     = useCalibrationStore((s) => s.templateCapturing)
+  const templateAlreadyExists = useCalibrationStore((s) => s.templateAlreadyExists)
+  const templateUseExisting   = useCalibrationStore((s) => s.templateUseExisting)
+  const captureTemplate       = useCalibrationStore((s) => s.captureTemplate)
+  const liveScore             = useCalibrationStore((s) => s.liveScore)
+  const setLiveScore          = useCalibrationStore((s) => s.setLiveScore)
+  const nextStep              = useCalibrationStore((s) => s.nextStep)
+  const prevStep              = useCalibrationStore((s) => s.prevStep)
 
   const selectedProduct = useAppStore((s) => s.selectedProduct)
   const templateCount = selectedProduct?.trigger_template_count ?? 0
   const threshold = (selectedProduct?.inspection_config as Record<string, unknown>)?.match_threshold as number ?? 0.8
 
-  // ライブスコアポーリング
+  // ライブスコアポーリング (既存利用中でもプレビュー用に動かす)
   useEffect(() => {
     if (templateCaptured) return
     let active = true
@@ -251,6 +267,13 @@ function ProductStep({ productId }: { productId: string }) {
     captureTemplate(templateCount)
   }, [captureTemplate, templateCount])
 
+  // Space キーで撮影
+  useKeyboard('Space', () => {
+    if (templateCapturing) return
+    handleCapture()
+  }, true)
+
+  const proceedable = templateCaptured || templateUseExisting
   const scoreColor = liveScore != null && liveScore >= threshold ? '#10b981' : '#f59e0b'
   const scorePct = liveScore != null ? Math.min(100, liveScore * 100) : 0
 
@@ -264,83 +287,67 @@ function ProductStep({ productId }: { productId: string }) {
           </svg>
         </StepIcon>
         <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '16px 0 8px' }}>
-          製品を登録
+          製品テンプレートの登録
         </h3>
         <p style={{ fontSize: 14, color: '#7c7494', lineHeight: 1.6, margin: 0 }}>
-          検査する製品を<strong>所定の位置</strong>に置いてください。
-          オレンジ枠がテンプレート領域です。
+          検査する製品を<strong>所定の位置</strong>に置きます。オレンジ枠がテンプレート領域です。
+          {templateAlreadyExists && '前回と同じ配置なら「既存のまま使う」で飛ばせます。'}
         </p>
 
-        {/* Live Score */}
-        {!templateCaptured && (
-          <div style={{ marginTop: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: '#7c7494' }}>マッチスコア</span>
-              <span style={{
-                fontSize: 13, fontWeight: 700, color: scoreColor,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}>
-                {liveScore != null ? (liveScore * 100).toFixed(0) + '%' : '--'}
-              </span>
-            </div>
-            <div style={{ height: 8, background: '#ebe7e2', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
-              {/* Threshold marker */}
-              <div style={{
-                position: 'absolute', left: `${threshold * 100}%`, top: 0, bottom: 0,
-                width: 2, background: '#9994a8', zIndex: 1,
-              }} />
-              <div style={{
-                height: '100%', borderRadius: 4,
-                background: scoreColor,
-                width: `${scorePct}%`,
-                transition: 'width 0.3s ease, background 0.3s ease',
-              }} />
-            </div>
-            <div style={{ fontSize: 11, color: '#b0a9bc', marginTop: 4, textAlign: 'right' }}>
-              閾値: {(threshold * 100).toFixed(0)}%
-            </div>
-          </div>
+        {/* 既存プレビュー */}
+        {templateAlreadyExists && !templateCaptured && (
+          <ExistingPreview
+            title={`登録済みのテンプレート（${templateCount}枚）`}
+            src={`/api/products/${productId}/trigger-template?index=0&t=${Date.now()}`}
+            selected={templateUseExisting}
+          />
         )}
 
-        {templateCaptured && (
-          <div style={{
-            marginTop: 20, padding: 16, borderRadius: 12,
-            background: '#f0fdf4', border: '1px solid #bbf7d0',
-            display: 'flex', alignItems: 'center', gap: 12,
-            animation: 'calibSlideIn 0.3s ease',
-          }}>
-            <div style={{
-              width: 80, height: 60, borderRadius: 8, overflow: 'hidden',
-              border: '2px solid #10b981',
+        {/* Live Score (閾値の参考表示) */}
+        <div style={{ marginTop: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#7c7494' }}>現在のマッチスコア</span>
+            <span style={{
+              fontSize: 13, fontWeight: 700, color: scoreColor,
+              fontFamily: "'JetBrains Mono', monospace",
             }}>
-              <img src={`/api/products/${productId}/trigger-template?index=0&t=${Date.now()}`} alt=""
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{
-                  width: 20, height: 20, borderRadius: '50%', background: '#10b981',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: '#fff', fontSize: 12, animation: 'calibCheck 0.3s ease',
-                }}>✓</div>
-                <span style={{ fontSize: 14, fontWeight: 600, color: '#166534' }}>テンプレートを登録しました</span>
-              </div>
-            </div>
+              {liveScore != null ? (liveScore * 100).toFixed(0) + '%' : '--'}
+            </span>
           </div>
+          <div style={{ height: 8, background: '#ebe7e2', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
+            <div style={{
+              position: 'absolute', left: `${threshold * 100}%`, top: 0, bottom: 0,
+              width: 2, background: '#9994a8', zIndex: 1,
+            }} />
+            <div style={{
+              height: '100%', borderRadius: 4, background: scoreColor,
+              width: `${scorePct}%`,
+              transition: 'width 0.3s ease, background 0.3s ease',
+            }} />
+          </div>
+          <div style={{ fontSize: 11, color: '#b0a9bc', marginTop: 4, textAlign: 'right' }}>
+            閾値: {(threshold * 100).toFixed(0)}%
+          </div>
+        </div>
+
+        {templateCaptured && (
+          <StatusBadge
+            text="新しいテンプレートを登録しました"
+            src={`/api/products/${productId}/trigger-template?index=0&t=${Date.now()}`}
+          />
         )}
       </StepCard>
 
-      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', padding: '16px 0 0' }}>
-        <SecondaryButton onClick={prevStep}>← 戻る</SecondaryButton>
-        {!templateCaptured ? (
-          <PrimaryButton onClick={handleCapture} disabled={templateCapturing}>
-            {templateCapturing ? '撮影中…' : '撮影する'}
-          </PrimaryButton>
-        ) : (
-          <PrimaryButton onClick={nextStep}>
-            次へ →
-          </PrimaryButton>
-        )}
+      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', padding: '16px 0 0', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <SecondaryButton onClick={prevStep}>← 戻る</SecondaryButton>
+          <SecondaryButton onClick={handleCapture} disabled={templateCapturing}>
+            {templateCapturing ? '撮影中…' : templateAlreadyExists || templateCaptured ? '撮り直す' : '撮影する'}
+          </SecondaryButton>
+        </div>
+        <PrimaryButton onClick={nextStep} disabled={!proceedable || templateCapturing}>
+          次へ →
+        </PrimaryButton>
       </div>
     </div>
   )
@@ -361,6 +368,14 @@ function TestStep({ onComplete }: { onComplete: () => void }) {
   const isNgPhase = testPhase === 'ng'
   const isOkPhase = testPhase === 'ok'
   const isDone = testPhase === 'done'
+
+  // Space キー: 結果が出ていなければ検査テスト、出ていれば次へ
+  useKeyboard('Space', () => {
+    if (isDone) { onComplete(); return }
+    if (testRunning) return
+    if (testResults) confirmTest()
+    else runTest()
+  }, true)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', animation: 'calibSlideIn 0.3s ease' }}>
@@ -623,20 +638,85 @@ function PrimaryButton({ onClick, disabled, children, style }: {
   )
 }
 
-function SecondaryButton({ onClick, children, style }: {
-  onClick?: () => void; children: React.ReactNode; style?: React.CSSProperties
+function SecondaryButton({ onClick, disabled, children, style }: {
+  onClick?: () => void; disabled?: boolean; children: React.ReactNode; style?: React.CSSProperties
 }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} disabled={disabled} style={{
       height: 44, padding: '0 20px',
       fontSize: 14, fontWeight: 600,
       fontFamily: "'DM Sans', system-ui, sans-serif",
-      color: '#5c5470', background: '#fff',
-      border: '1.5px solid #e0dcd7', borderRadius: 12, cursor: 'pointer',
+      color: disabled ? '#b0a9bc' : '#5c5470', background: '#fff',
+      border: '1.5px solid #e0dcd7', borderRadius: 12,
+      cursor: disabled ? 'default' : 'pointer',
       boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      opacity: disabled ? 0.7 : 1,
       ...style,
     }}>
       {children}
     </button>
   )
+}
+
+/* ── Existing data preview (既存を使う / 撮り直す) ── */
+
+function ExistingPreview({ title, src, selected }: {
+  title: string; src: string; selected: boolean
+}) {
+  return (
+    <div style={{
+      marginTop: 20, padding: 14, borderRadius: 12,
+      background: selected ? '#f5f3ff' : '#faf9f7',
+      border: `1.5px solid ${selected ? '#a5b4fc' : '#ebe7e2'}`,
+      display: 'flex', alignItems: 'center', gap: 14,
+      transition: 'all 0.2s ease',
+    }}>
+      <div style={{
+        width: 100, height: 75, borderRadius: 8, overflow: 'hidden',
+        border: '1.5px solid #e0dcd7', flexShrink: 0, background: '#1a1625',
+      }}>
+        <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1625', marginBottom: 4 }}>
+          {title}
+        </div>
+        <div style={{ fontSize: 12, color: '#7c7494', lineHeight: 1.5 }}>
+          そのまま使う場合は「次へ」を押してください。撮り直したい場合は下のボタンで再撮影できます。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatusBadge({ text, src }: { text: string; src: string }) {
+  return (
+    <div style={{
+      marginTop: 20, padding: 16, borderRadius: 12,
+      background: '#f0fdf4', border: '1px solid #bbf7d0',
+      display: 'flex', alignItems: 'center', gap: 12,
+      animation: 'calibSlideIn 0.3s ease',
+    }}>
+      <div style={{
+        width: 80, height: 60, borderRadius: 8, overflow: 'hidden',
+        border: '2px solid #10b981',
+      }}>
+        <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      </div>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{
+            width: 20, height: 20, borderRadius: '50%', background: '#10b981',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', fontSize: 12, animation: 'calibCheck 0.3s ease',
+          }}>✓</div>
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#166534' }}>{text}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function useBump() {
+  return useState(0)
 }

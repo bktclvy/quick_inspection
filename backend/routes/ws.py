@@ -2,12 +2,15 @@
 import asyncio
 import logging
 import json
+import os
 import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from backend.camera import camera
 from backend.product import product_manager
+from backend.scale import scale
+from backend.box_log import append_box_log
 import config
 
 log = logging.getLogger("ws")
@@ -75,6 +78,29 @@ def get_inspection_status() -> dict:
     }
 
 
+def _inject_scale(msg: dict) -> None:
+    """state_update メッセージに秤のライブ値を付加する。
+    port_open: シリアルポートが開いているか
+    live: 直近 2 秒以内にデータを受信しているか
+    """
+    r = scale.get_latest()
+    port_open = scale.is_connected()
+    if not (r or port_open):
+        return
+    data_age_ms: int | None = None
+    if r:
+        data_age_ms = int((time.monotonic() - r.received_at) * 1000)
+    live = port_open and r is not None and data_age_ms is not None and data_age_ms <= 2000
+    msg["scale"] = {
+        "port_open": port_open,
+        "live": live,
+        "data_age_ms": data_age_ms,
+        "value_g": r.value_g if r else None,
+        "stable": r.stable if r else False,
+        "overload": r.overload if r else False,
+    }
+
+
 @router.websocket("/ws/inspection")
 async def inspection_stream(websocket: WebSocket):
     """検査用WebSocket: 状態更新の送信、手動トリガーの受信。"""
@@ -82,6 +108,8 @@ async def inspection_stream(websocket: WebSocket):
 
     manual_trigger_event = asyncio.Event()
     confirm_event = asyncio.Event()
+    # confirm アクションに添付された箱ログデータ (receive_loop → メインループ)
+    _confirm_box_result: list[dict | None] = [None]
 
     async def receive_loop():
         try:
@@ -94,6 +122,7 @@ async def inspection_stream(websocket: WebSocket):
                 if msg.get("action") == "manual_trigger":
                     manual_trigger_event.set()
                 elif msg.get("action") == "confirm":
+                    _confirm_box_result[0] = msg.get("box_result")
                     confirm_event.set()
         except WebSocketDisconnect:
             pass
@@ -129,21 +158,55 @@ async def inspection_stream(websocket: WebSocket):
             last_processed_frame_id = frame_id
 
             product = product_manager.get(_active_product_id)
-            if not product or not product.rois:
+            if not product:
                 await asyncio.sleep(0.5)
                 continue
 
-            rois = product.rois
-            roi_dicts = [r.to_dict() for r in rois]
+            # ROI が無い場合は「全体 = 仮想 ROI __full_frame__」で推論する
+            # (predict-once API と同じロジック)
+            if not product.rois:
+                models = product_manager.list_models(_active_product_id)
+                if not models:
+                    await asyncio.sleep(0.5)
+                    continue
+                first_model = models[0]["model_name"]
+                # モデルが未ロードならロード
+                if first_model not in _model_manager.get_loaded_models():
+                    models_dir = product_manager.models_dir(_active_product_id)
+                    await loop.run_in_executor(
+                        None, _model_manager.load,
+                        first_model,
+                        os.path.join(models_dir, f"{first_model}.keras"),
+                        os.path.join(models_dir, f"{first_model}_meta.json"),
+                    )
+                rois = []
+                roi_dicts = [{
+                    "id": "__full_frame__",
+                    "name": "全体",
+                    "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
+                    "model_name": first_model,
+                    "color": "#6366f1",
+                }]
+            else:
+                rois = product.rois
+                roi_dicts = [r.to_dict() for r in rois]
+
             from backend.state_machine import InspectionState
 
             # ── 確認アクション ──
             if confirm_event.is_set():
                 confirm_event.clear()
+                box_result = _confirm_box_result[0]
+                _confirm_box_result[0] = None
                 if _state_machine.state == InspectionState.WAITING_CONFIRM:
                     result = _state_machine.confirm()
+                    # 箱ログ書き込み（秤モード時のみ box_result が送られてくる）
+                    if box_result and _active_product_id:
+                        await loop.run_in_executor(
+                            None, append_box_log, _active_product_id, box_result)
                     camera.unfreeze_frame()
                     msg = {"type": "state_update", **result}
+                    _inject_scale(msg)
                     await websocket.send_json(msg)
                     await asyncio.sleep(0)
                     continue
@@ -161,34 +224,27 @@ async def inspection_stream(websocket: WebSocket):
                         None, product_manager.save_inspection_log,
                         _active_product_id, frame, result)
                 msg = {"type": "state_update", **result}
+                _inject_scale(msg)
                 await websocket.send_json(msg)
                 await asyncio.sleep(0)
                 continue
 
-            # ── 手動モード: 自動検知をスキップし、トリガー待機 ──
+            # ── 手動モード: 背景差分取出し検知をスキップ ──
+            # JUDGED/WAITING_* からは confirm アクション（スペース押下）で IDLE に戻る。
+            # 背景未登録でも動作可能。
             if getattr(_state_machine, 'trigger_mode', 'auto') == 'manual':
-                # JUDGED/WAITING 状態は取出し検知のみ行う
-                if _state_machine.state in (InspectionState.JUDGED,
-                                            InspectionState.WAITING_REMOVAL,
-                                            InspectionState.WAITING_CONFIRM):
-                    raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    bg_match = await loop.run_in_executor(
-                        None, product_manager.background_match_score_gray,
-                        _active_product_id, raw_gray)
-                    prev_state = _state_machine.state
-                    result = _state_machine.process_frame_unified(
-                        {}, bg_match, 0.0, None)
-                    if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
-                        camera.unfreeze_frame()
-                    msg = {"type": "state_update", **result}
-                    msg["trigger_mode"] = "manual"
-                    await websocket.send_json(msg)
-                else:
-                    # IDLE: トリガー待ち状態を送信
-                    counters = _state_machine.get_counters()
-                    msg = {"type": "state_update", "state": "idle",
-                           "trigger_mode": "manual", "counters": counters}
-                    await websocket.send_json(msg)
+                counters = _state_machine.get_counters()
+                msg: dict = {
+                    "type": "state_update",
+                    "state": _state_machine.state.value,
+                    "trigger_mode": "manual",
+                    "counters": counters,
+                }
+                # JUDGED 時は判定情報を付加して UI が結果を表示し続ける
+                if _state_machine.state == InspectionState.JUDGED and _state_machine.last_judgment:
+                    msg.update(_state_machine.last_judgment)
+                _inject_scale(msg)
+                await websocket.send_json(msg)
                 await asyncio.sleep(0.05)
                 continue
 
@@ -228,6 +284,7 @@ async def inspection_stream(websocket: WebSocket):
                 t_total_ai = int((time.monotonic() - t_frame_ai) * 1000)
                 msg = {"type": "state_update", **result,
                        "_timings": {"match_ms": 0, "infer_ms": t_infer_ms, "total_ms": t_total_ai}}
+                _inject_scale(msg)
                 await websocket.send_json(msg)
                 await asyncio.sleep(0.03)
                 continue
@@ -297,6 +354,7 @@ async def inspection_stream(websocket: WebSocket):
             t_total_ms = int((time.monotonic() - t_frame) * 1000)
             msg = {"type": "state_update", **result,
                    "_timings": {"match_ms": t_match_ms, "infer_ms": t_infer_ms, "total_ms": t_total_ms}}
+            _inject_scale(msg)
             await websocket.send_json(msg)
 
             await asyncio.sleep(0.03)

@@ -3,6 +3,8 @@ import type { Counters, HistoryEntry, ROIResult, Judgment } from '../types'
 import type { InspectionState, InspectionStateUpdate } from '../types/ws'
 import { inspectionApi } from '../api/inspection'
 import { productsApi } from '../api/products'
+import { useScaleStore } from './scaleStore'
+import { useBoxWorkflowStore } from './boxWorkflowStore'
 
 interface InspectionStoreState {
   /* state */
@@ -76,6 +78,13 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
     set({ starting: true })
     try {
       await inspectionApi.start(productId)
+      // packingConfig を取得して boxWorkflow を初期化
+      let packingConfig = null
+      try {
+        const product = await productsApi.get(productId)
+        packingConfig = product?.inspection_config?.packing ?? null
+      } catch { /* 取得失敗時は packing なしで続行 */ }
+      useBoxWorkflowStore.getState().init(productId, packingConfig)
       set({ inspecting: true, inspectionProductId: productId, history: [], starting: false })
     } catch {
       set({ starting: false })
@@ -84,6 +93,7 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
 
   stopInspection: async () => {
     await inspectionApi.stop()
+    useBoxWorkflowStore.getState().reset()
     set({ inspecting: false, currentState: 'idle', overallJudgment: null, overallConfidence: null, roiResults: [] })
   },
 
@@ -105,6 +115,27 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
       triggerCount: data.trigger_count ?? 0,
       triggerRequired: data.trigger_required ?? 3,
       remainingMs: data.remaining_ms ?? 0,
+    }
+
+    // Route scale data to scaleStore
+    if (data.scale) {
+      useScaleStore.getState().update({
+        portOpen: data.scale.port_open,
+        live: data.scale.live,
+        value_g: data.scale.value_g,
+        stable: data.scale.stable,
+        overload: data.scale.overload,
+      })
+    }
+
+    // Route box_complete event to boxWorkflowStore
+    // 「24個達成」の瞬間 current_box_progress は 24 % 24 = 0 になるため、
+    // 期待重量計算には pieces_per_box (1箱の入数) を渡す
+    if (data.state === 'waiting_confirm' && data.confirm_reason === 'box_complete') {
+      const bw = useBoxWorkflowStore.getState()
+      if (bw.phase === 'inspecting') {
+        bw.onBoxComplete(data.counters?.pieces_per_box ?? 0)
+      }
     }
 
     if (data.state === 'judged' && data.overall_judgment) {

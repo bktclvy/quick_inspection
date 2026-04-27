@@ -23,6 +23,7 @@ import { ROIStep } from '@/components/steps/roi-step'
 import { DatasetStepNew } from '@/components/steps/dataset-step'
 import { TrainingStepNew } from '@/components/steps/training-step'
 import { AssignStepNew } from '@/components/steps/assign-step'
+import { PackingStep } from '@/components/steps/packing-step'
 
 const STEPS = [
   { label: '基本設定',     desc: '製品の基本パラメータを設定' },
@@ -31,6 +32,7 @@ const STEPS = [
   { label: 'データ収集',   desc: 'OK/NG画像を収集' },
   { label: '学習',         desc: 'モデルを訓練' },
   { label: 'モデル割当',   desc: 'ROIにモデルを紐付け' },
+  { label: '梱包校正',     desc: '秤を使った員数検証の設定（任意）' },
 ] as const
 
 interface Props {
@@ -55,6 +57,13 @@ export function SetupWizard({ productName }: Props) {
   const productId = useAppStore((s) => s.selectedProductId)
   const selectedProduct = useAppStore((s) => s.selectedProduct)
   const refreshROIs = useAppStore((s) => s.refreshROIs)
+
+  // ステップ移動のたびに selectedProduct をリフレッシュ。
+  // BasicSettingsStep など各ステップが saveConfig してもAppStoreは自動更新されないため、
+  // 次のステップに入る前に必ずサーバーから最新を取り直す。
+  useEffect(() => {
+    if (productId) refreshROIs()
+  }, [step, productId, refreshROIs])
 
   const handleDraw = useCallback(async (rect: { x: number; y: number; w: number; h: number }) => {
     if (!productId) return
@@ -85,7 +94,7 @@ export function SetupWizard({ productName }: Props) {
     } catch { Toast.error('失敗しました') }
   }, [productId, triggerDrawMode, refreshROIs])
 
-  const showCamera = step !== 4  // 学習ステップのみカメラ非表示
+  const showCamera = step !== 4 && step !== 6  // 学習・梱包ステップはカメラ非表示
   const canGoNext = step < STEPS.length - 1
   const canGoBack = step > 0
 
@@ -248,6 +257,13 @@ export function SetupWizard({ productName }: Props) {
           {step === 3 && <DatasetStepNew />}
           {step === 4 && <TrainingStepNew />}
           {step === 5 && <AssignStepNew onTestResults={(r) => setTestResults(r.map((x) => ({ roi_id: x.roi_id, judgment: x.judgment })))} />}
+          {step === 6 && productId && (
+            <PackingStep
+              productId={productId}
+              piecesPerBox={selectedProduct?.inspection_config?.pieces_per_box ?? 0}
+              initialConfig={selectedProduct?.inspection_config?.packing}
+            />
+          )}
         </div>
       </div>
 

@@ -8,12 +8,17 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAppStore } from '@/stores/appStore'
 import { useInspectionStore } from '@/stores/inspectionStore'
+import { useBoxWorkflowStore } from '@/stores/boxWorkflowStore'
+import { useCalibrationStore } from '@/stores/calibrationStore'
 import { useInspectionWS } from '@/hooks/useInspectionWS'
 import { useAudioFeedback } from '@/hooks/useAudioFeedback'
 import { useKeyboard } from '@/hooks/useKeyboard'
+import { useScalePolling } from '@/hooks/useScalePolling'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { ROICanvas } from '@/components/camera/ROICanvas'
 import { CalibrationWizard } from '@/components/inspection/CalibrationWizard'
+import { BoxWorkflowOverlay } from '@/components/inspection/BoxWorkflowOverlay'
+import { BoxProgressCard } from '@/components/inspection/BoxProgressCard'
 import type { Counters } from '@/types'
 import type { InspectionState } from '@/types/ws'
 
@@ -21,6 +26,7 @@ export function InspectPage() {
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
   const rois             = useAppStore((s) => s.rois)
   const productId        = useAppStore((s) => s.selectedProductId)
+  const selectedProduct  = useAppStore((s) => s.selectedProduct)
   const inspecting       = useInspectionStore((s) => s.inspecting)
   const state            = useInspectionStore((s) => s.currentState)
   const judgment         = useInspectionStore((s) => s.overallJudgment)
@@ -38,6 +44,7 @@ export function InspectPage() {
 
   const { send } = useInspectionWS()
   const { play } = useAudioFeedback()
+  useScalePolling()
 
   useEffect(() => { checkStatus() }, [checkStatus])
   useEffect(() => { if (productId) loadCounters(productId) }, [productId, loadCounters])
@@ -46,13 +53,23 @@ export function InspectPage() {
   }, [state, judgment, play])
 
   const manual = useCallback(() => {
+    if (!inspecting) return
+    // waiting_confirm (箱完成など) は常に confirm で次へ
     if (state === 'waiting_confirm') {
       send({ action: 'confirm' })
-    } else if (inspecting) {
-      send({ action: 'manual_trigger' })
+      return
     }
-  }, [inspecting, state, send])
-  useKeyboard('Space', manual, inspecting)
+    // manual モード: IDLE → 検査実行、JUDGED / WAITING_REMOVAL → 次へ (confirm)
+    if (triggerMode === 'manual') {
+      if (state === 'idle') send({ action: 'manual_trigger' })
+      else if (state === 'judged' || state === 'waiting_removal') send({ action: 'confirm' })
+    }
+  }, [inspecting, state, triggerMode, send])
+  // overlay (CalibrationWizard / BoxWorkflowOverlay) が出ている間は inspect-page の Space を無効化
+  const calibrationOpen = useCalibrationStore((s) => s.isOpen)
+  const boxPhaseOverlayShown = useBoxWorkflowStore((s) => s.phase !== 'off' && s.phase !== 'inspecting')
+  const keyEnabled = inspecting && !calibrationOpen && !boxPhaseOverlayShown
+  useKeyboard('Space', manual, keyEnabled)
 
   const vs = visualState(state, judgment)
   const hasResults = (state === 'judged' || state === 'waiting_removal' || state === 'waiting_confirm') && roiResults.length > 0
@@ -62,6 +79,10 @@ export function InspectPage() {
   if (timings?.infer_ms != null) lastInferMsRef.current = timings.infer_ms
   const isManual = triggerMode === 'manual'
   const isAI = triggerMode === 'ai'
+
+  const boxPhase = useBoxWorkflowStore((s) => s.phase)
+  // When packing is active and waiting_confirm is for box_complete, the BoxWorkflowOverlay handles it
+  const packingHandlesBoxComplete = boxPhase !== 'off' && state === 'waiting_confirm' && confirmReason === 'box_complete'
 
   let statusText = ''
   if (isManual && state === 'idle') {
@@ -116,7 +137,10 @@ export function InspectPage() {
         {/* ── Flow Indicator ── */}
         <FlowIndicator state={state} />
 
-        {/* ── Counters ── */}
+        {/* ── 箱進捗 (B カメラ派生 + C 秤実測) ── */}
+        <BoxProgressCard counters={counters} packing={selectedProduct?.inspection_config?.packing} />
+
+        {/* ── Counters (検査回数累計) ── */}
         <CounterPanel counters={counters} productId={productId}
           resetCounters={resetCounters} />
 
@@ -237,8 +261,8 @@ export function InspectPage() {
           )}
         </div>
 
-        {/* ── Box Complete Banner ── */}
-        {state === 'waiting_confirm' && confirmReason === 'box_complete' && (
+        {/* ── Box Complete Banner (non-packing products only) ── */}
+        {state === 'waiting_confirm' && confirmReason === 'box_complete' && !packingHandlesBoxComplete && (
           <div style={{
             borderRadius: 16, padding: '24px 20px',
             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
@@ -337,6 +361,7 @@ export function InspectPage() {
       {/* keyframes are in layout.css */}
     </div>
     <CalibrationWizard />
+    <BoxWorkflowOverlay />
   </>
   )
 }
@@ -587,70 +612,10 @@ function CounterPanel({ counters, productId, resetCounters }: {
       >
         リセット
       </button>
-      <BoxProgress counters={counters} productId={productId} />
     </div>
   )
 }
 
-function BoxProgress({ counters }: { counters: Counters; productId: string | null }) {
-  const ppb = counters.pieces_per_box ?? 0
-  if (ppb <= 0) return null
-
-  const progress = counters.current_box_progress ?? 0
-  const boxes = counters.completed_boxes ?? 0
-  const pct = (progress / ppb) * 100
-  const justCompleted = progress === 0 && boxes > 0
-
-  return (
-    <div style={{ borderTop: '1px solid #f0ede9' }}>
-      {/* Box completion message */}
-      {justCompleted && (
-        <div style={{
-          padding: '8px 16px',
-          background: '#ecfdf5', color: '#065f46',
-          fontSize: 13, fontWeight: 600, textAlign: 'center',
-          animation: 'fadeUp 0.3s ease',
-        }}>
-          ✓ {boxes}箱目が完成しました
-        </div>
-      )}
-      <div style={{ padding: '10px 16px 4px' }}>
-        <div style={{ height: 6, borderRadius: 3, background: '#f0ede9', overflow: 'hidden' }}>
-          <div style={{
-            height: '100%', borderRadius: 3,
-            background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
-            width: `${pct}%`, transition: 'width 0.3s ease',
-          }} />
-        </div>
-      </div>
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '4px 16px 10px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-          <span style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 18, fontWeight: 700, color: '#1a1625',
-            fontVariantNumeric: 'tabular-nums',
-          }}>{progress}</span>
-          <span style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 13, fontWeight: 500, color: '#b0a9bc',
-          }}>/ {ppb}</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: '#9994a8' }}>完成</span>
-          <span style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 22, fontWeight: 800, color: '#059669',
-            fontVariantNumeric: 'tabular-nums',
-          }}>{boxes}</span>
-          <span style={{ fontSize: 11, fontWeight: 600, color: '#9994a8' }}>箱</span>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 const LABELS: Record<InspectionState, string> = {
   idle: '待機中', detecting: '検知中', inspecting: '推論中',

@@ -33,6 +33,15 @@ export interface ProductSummary {
   roi_count: number
 }
 
+export interface PackingConfig {
+  enabled: boolean
+  unit_weight_g: number
+  unit_weight_stddev_g: number
+  sample_count: number
+  tolerance_g: number
+  zero_tolerance_g: number
+}
+
 export interface InspectionConfig {
   trigger_mode: TriggerMode
   // background mode
@@ -49,6 +58,7 @@ export interface InspectionConfig {
   // common
   judged_display_ms: number
   pieces_per_box: number
+  packing?: PackingConfig
   // 任意の拡張キー（学習設定、カメラ設定など）
   [key: string]: unknown
 }

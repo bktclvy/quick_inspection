@@ -33,6 +33,16 @@ export interface InspectionStateUpdate {
 
   // perf diagnostics (debug only)
   _timings?: { match_ms: number; infer_ms: number | null; total_ms: number }
+
+  // scale live value (injected by backend if scale is connected)
+  scale?: {
+    port_open: boolean
+    live: boolean
+    data_age_ms: number | null
+    value_g: number | null
+    stable: boolean
+    overload: boolean
+  }
 }
 
 export type InspectionState =

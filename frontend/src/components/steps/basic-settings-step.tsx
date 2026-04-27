@@ -51,9 +51,14 @@ export function BasicSettingsStep() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Field label="1箱あたりの数量（0で無効）">
             <input
+              key={ppb}
               type="number" min={0} max={9999}
-              value={ppb}
-              onChange={(e) => save({ pieces_per_box: Number(e.target.value) })}
+              defaultValue={ppb}
+              onBlur={(e) => {
+                const n = parseInt(e.target.value, 10)
+                save({ pieces_per_box: isNaN(n) ? 0 : Math.max(0, Math.min(9999, n)) })
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               style={inputStyle}
             />
           </Field>

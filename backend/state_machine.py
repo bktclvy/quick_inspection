@@ -323,14 +323,16 @@ class InspectionStateMachine:
         return {"state": "idle", "trigger_mode": "auto", "counters": counters, **diag}
 
     def confirm(self) -> dict:
-        """ユーザーが確認ボタンを押した。IDLEに戻す。"""
+        """ユーザーが確認ボタンを押した。どの state からでも IDLE に戻す。
+        manual モードでの「判定表示後すぐスペースで次へ」の経路にも対応。
+        """
         with self._lock:
             self.state = InspectionState.IDLE
             self._trigger_count = 0
             self._removal_count = 0
             self._stability_count = 0
             self._confirm_reason = ""
-            return {"state": "idle", "trigger_mode": "auto", "counters": self._get_counters_internal()}
+            return {"state": "idle", "trigger_mode": self.trigger_mode, "counters": self._get_counters_internal()}
 
     # ── AI トリガーモード ─────────────────────────────────
 

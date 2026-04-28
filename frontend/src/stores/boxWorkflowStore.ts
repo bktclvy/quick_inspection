@@ -9,8 +9,6 @@ export type BoxPhase =
   | 'weighing_measuring' // ❸ calling /api/scale/weigh, waiting
   | 'weigh_ok'           // ❸ OK result, showing [次の箱へ]
   | 'weigh_ng'           // ❸ NG result, showing [もう一度計量する]
-  | 'removal'            // ❹ waiting for box to be removed (OK path)
-  | 'discard_removal'    // ❹ waiting for box to be removed (discard path)
 
 export interface LocalWeighResult {
   ok: boolean
@@ -36,9 +34,7 @@ interface BoxWorkflowState {
   startMeasuring: () => void
   onWeighOk: (r: LocalWeighResult) => void
   onWeighNg: (r: LocalWeighResult) => void
-  toRemoval: () => void
-  toDiscardRemoval: () => void
-  onBoxRemoved: () => void
+  toTareNextBox: () => void  // 員数 OK 後、次の箱へ進むため tare に戻す
   reset: () => void
 }
 
@@ -70,11 +66,7 @@ export const useBoxWorkflowStore = create<BoxWorkflowState>((set) => ({
 
   onWeighNg: (r) => set({ phase: 'weigh_ng', weighResult: r }),
 
-  toRemoval: () => set({ phase: 'removal' }),
-
-  toDiscardRemoval: () => set({ phase: 'discard_removal' }),
-
-  onBoxRemoved: () => set({ phase: 'tare', weighResult: null, error: null }),
+  toTareNextBox: () => set({ phase: 'tare', weighResult: null, error: null, currentBoxQty: 0 }),
 
   reset: () => set({ phase: 'off', productId: null, packingConfig: null, weighResult: null, error: null, currentBoxQty: 0 }),
 }))

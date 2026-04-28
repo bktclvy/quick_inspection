@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useBoxWorkflowStore } from '@/stores/boxWorkflowStore'
 import { useScaleStore } from '@/stores/scaleStore'
@@ -37,7 +37,7 @@ function OverlayContent() {
   const weighResult   = useBoxWorkflowStore((s) => s.weighResult)
   const error         = useBoxWorkflowStore((s) => s.error)
   const { onTareOk, onTareError, startMeasuring, onWeighOk, onWeighNg,
-          toRemoval, toDiscardRemoval, onBoxRemoved } = useBoxWorkflowStore()
+          toTareNextBox } = useBoxWorkflowStore()
 
   const scaleValue  = useScaleStore((s) => s.value_g)
   const scaleStable = useScaleStore((s) => s.stable)
@@ -47,20 +47,6 @@ function OverlayContent() {
   const { send }  = useInspectionWS()
   const { play }  = useAudioFeedback()
   const [taring, setTaring] = useState(false)
-
-  // Watch for box removal (scale back to 0) during removal phases
-  const zeroTol = packingConfig?.zero_tolerance_g ?? 0.5
-  const boxRemovedRef = useRef(false)
-  useEffect(() => {
-    if (phase !== 'removal' && phase !== 'discard_removal') {
-      boxRemovedRef.current = false
-      return
-    }
-    if (scaleStable && scaleValue != null && Math.abs(scaleValue) <= zeroTol && !boxRemovedRef.current) {
-      boxRemovedRef.current = true
-      onBoxRemoved()
-    }
-  }, [phase, scaleValue, scaleStable, zeroTol, onBoxRemoved])
 
   const handleTare = useCallback(async () => {
     if (taring) return
@@ -104,6 +90,7 @@ function OverlayContent() {
     }
   }, [packingConfig, currentBoxQty, startMeasuring, onWeighOk, onWeighNg, play])
 
+  // 員数 OK → confirm 送信 + box_log 書込 + 次の箱の風袋準備へ
   const handleConfirmOk = useCallback(() => {
     if (!weighResult) return
     const now = new Date().toISOString()
@@ -119,26 +106,8 @@ function OverlayContent() {
         tolerance_g: weighResult.tolerance_g,
       },
     })
-    toRemoval()
-  }, [weighResult, currentBoxQty, send, toRemoval])
-
-  const handleDiscard = useCallback(() => {
-    if (!weighResult) return
-    const now = new Date().toISOString()
-    send({
-      action: 'confirm',
-      box_result: {
-        box_id: `box_${Date.now()}`,
-        completed_at: now,
-        status: 'DISCARDED',
-        final_weight_g: weighResult.measured_g,
-        expected_weight_g: weighResult.expected_g,
-        box_qty: currentBoxQty,
-        tolerance_g: weighResult.tolerance_g,
-      },
-    })
-    toDiscardRemoval()
-  }, [weighResult, currentBoxQty, send, toDiscardRemoval])
+    toTareNextBox()
+  }, [weighResult, currentBoxQty, send, toTareNextBox])
 
   return (
     <div style={{
@@ -185,18 +154,7 @@ function OverlayContent() {
 
       {/* ── Weigh NG ── */}
       {phase === 'weigh_ng' && weighResult && (
-        <WeighNgPanel result={weighResult} boxQty={currentBoxQty} onDiscard={handleDiscard} />
-      )}
-
-      {/* ── Removal wait ── */}
-      {(phase === 'removal' || phase === 'discard_removal') && (
-        <RemovalPanel
-          scaleValue={scaleValue}
-          scaleStable={scaleStable}
-          scaleLive={scaleLive}
-          zeroTol={zeroTol}
-          discarded={phase === 'discard_removal'}
-        />
+        <WeighNgPanel result={weighResult} boxQty={currentBoxQty} onRetry={handleWeigh} />
       )}
     </div>
   )
@@ -279,24 +237,9 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
           {taring ? '風袋リセット中…' : '風袋リセット'}
         </button>
         {!scaleLive && (
-          <div style={{ marginTop: 12, padding: '12px 14px', background: scalePort ? '#fff7ed' : '#fef2f2', borderRadius: 10, border: `1.5px solid ${scalePort ? '#fed7aa' : '#fca5a5'}` }}>
-            <p style={{ fontSize: 12, fontWeight: 600, color: scalePort ? '#c2410c' : '#dc2626', textAlign: 'center', margin: '0 0 8px' }}>
-              {scalePort ? '秤からデータが届いていません。電源・ケーブル・通信設定を確認してください。' : '秤が接続されていません。'}
-            </p>
-            <button
-              onClick={async () => {
-                try { await scaleApi.reconnect() } catch { /* 無視 */ }
-              }}
-              style={{
-                width: '100%', height: 36,
-                fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
-                border: '1.5px solid #e0dcd7', borderRadius: 10,
-                background: '#fff', color: '#3d3654', cursor: 'pointer',
-              }}
-            >
-              秤に再接続を試みる
-            </button>
-          </div>
+          <p style={{ fontSize: 12, color: scalePort ? '#c2410c' : '#dc2626', textAlign: 'center', marginTop: 10 }}>
+            {scalePort ? '秤からデータが届いていません。' : '秤が接続されていません。'}
+          </p>
         )}
       </div>
     </>
@@ -370,16 +313,40 @@ function WeighOkPanel({ result, boxQty, onNext }: {
 }) {
   return (
     <>
-      <PanelHeader emoji="✅" title="員数チェック 合格" />
+      <PanelHeader emoji="✓" title="員数 OK" />
       <div style={{ padding: '20px 32px 28px' }}>
+        {/* 個数主役 */}
         <div style={{
-          background: '#f0fdf4', borderRadius: 12, padding: '16px 20px', marginBottom: 20,
-          border: '1.5px solid #86efac',
+          background: '#f0fdf4', borderRadius: 14, padding: '24px 20px', marginBottom: 14,
+          border: '1.5px solid #86efac', textAlign: 'center',
         }}>
-          <Row label="実測" value={`${result.measured_g.toFixed(1)} g`} color="#059669" />
-          <Row label="期待" value={`${result.expected_g.toFixed(1)} g ± ${result.expected_g > 0 ? (result.expected_g - result.measured_g).toFixed(1) : '—'}`} />
-          <Row label="差分" value={`${result.deviation_g >= 0 ? '+' : ''}${result.deviation_g.toFixed(1)} g`} />
-          <Row label="個数" value={`✓ 合格 (${boxQty} 個)`} color="#059669" />
+          <p style={{ fontSize: 12, fontWeight: 700, color: '#059669', letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>
+            合格
+          </p>
+          <p style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 44, fontWeight: 800, color: '#047857',
+            lineHeight: 1, margin: 0,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {boxQty} 個
+          </p>
+          <p style={{ fontSize: 13, color: '#059669', marginTop: 6, marginBottom: 0 }}>
+            期待 {boxQty} 個と一致
+          </p>
+        </div>
+        {/* グラム補助 */}
+        <div style={{
+          background: '#fafaf9', borderRadius: 10, padding: '10px 14px', marginBottom: 18,
+          border: '1px solid #ebe7e2',
+          display: 'flex', justifyContent: 'space-around',
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 12, color: '#7c7494',
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          <span>実測 {result.measured_g.toFixed(1)} g</span>
+          <span>期待 {result.expected_g.toFixed(1)} g</span>
+          <span>差 {result.deviation_g >= 0 ? '+' : ''}{result.deviation_g.toFixed(1)} g</span>
         </div>
         <button
           onClick={onNext}
@@ -399,87 +366,69 @@ function WeighOkPanel({ result, boxQty, onNext }: {
   )
 }
 
-function WeighNgPanel({ result, boxQty, onDiscard }: {
+function WeighNgPanel({ result, boxQty, onRetry }: {
   result: { measured_g: number; expected_g: number; deviation_g: number; estimated_qty_delta: number | null }
-  boxQty: number; onDiscard: () => void
+  boxQty: number; onRetry: () => void
 }) {
   const delta = result.estimated_qty_delta
+  // 推定実個数 = box_qty + delta (delta が正なら多い、負なら少ない)
+  const estimatedQty = delta != null ? boxQty + delta : null
+  const diffText = delta == null ? null
+    : delta > 0 ? `${Math.abs(delta).toFixed(1)} 個多い`
+    : delta < 0 ? `${Math.abs(delta).toFixed(1)} 個不足`
+    : '誤差範囲外'
   return (
     <>
-      <PanelHeader emoji="⚠" title="員数不一致" subtitle="重量が期待値から外れています" />
+      <PanelHeader emoji="⚠" title="員数不一致" subtitle="中身を確認してから再計量してください" />
       <div style={{ padding: '20px 32px 28px' }}>
+        {/* 個数主役 */}
         <div style={{
-          background: '#fef2f2', borderRadius: 12, padding: '16px 20px', marginBottom: 16,
-          border: '1.5px solid #fca5a5',
+          background: '#fef2f2', borderRadius: 14, padding: '24px 20px', marginBottom: 14,
+          border: '1.5px solid #fca5a5', textAlign: 'center',
         }}>
-          <Row label="実測" value={`${result.measured_g.toFixed(1)} g`} color="#dc2626" />
-          <Row label="期待" value={`${result.expected_g.toFixed(1)} g`} />
-          <Row label="差分" value={`${result.deviation_g >= 0 ? '+' : ''}${result.deviation_g.toFixed(1)} g`} color="#dc2626" />
-          {delta != null && (
-            <Row
-              label="推定差"
-              value={`約 ${delta > 0 ? '+' : ''}${delta.toFixed(1)} 個`}
-              color="#dc2626"
-            />
-          )}
+          <p style={{ fontSize: 12, fontWeight: 700, color: '#dc2626', letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>
+            推定 個数
+          </p>
+          <p style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 44, fontWeight: 800, color: '#b91c1c',
+            lineHeight: 1, margin: 0,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {estimatedQty != null ? `約 ${estimatedQty.toFixed(1)} 個` : '計算不能'}
+          </p>
+          <p style={{ fontSize: 13, color: '#dc2626', marginTop: 6, marginBottom: 0 }}>
+            期待 {boxQty} 個{diffText ? ` — ${diffText}` : ''}
+          </p>
         </div>
-        <p style={{ fontSize: 13, color: '#7c7494', marginBottom: 16, textAlign: 'center' }}>
-          この箱は破棄になります。OK カウンタから {boxQty} を減算します。
-        </p>
+        {/* グラム補助 */}
+        <div style={{
+          background: '#fafaf9', borderRadius: 10, padding: '10px 14px', marginBottom: 18,
+          border: '1px solid #ebe7e2',
+          display: 'flex', justifyContent: 'space-around',
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 12, color: '#7c7494',
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          <span>実測 {result.measured_g.toFixed(1)} g</span>
+          <span>期待 {result.expected_g.toFixed(1)} g</span>
+          <span>差 {result.deviation_g >= 0 ? '+' : ''}{result.deviation_g.toFixed(1)} g</span>
+        </div>
         <button
-          onClick={onDiscard}
+          onClick={onRetry}
           style={{
             width: '100%', height: 52,
             fontSize: 16, fontWeight: 700, fontFamily: 'inherit',
             border: 'none', borderRadius: 14, cursor: 'pointer',
-            background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+            background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
             color: '#fff',
-            boxShadow: '0 4px 16px rgba(239,68,68,0.35)',
+            boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
           }}
         >
-          破棄して降ろす
+          もう一度計量する
         </button>
       </div>
     </>
   )
 }
 
-function RemovalPanel({ scaleValue, scaleStable, scaleLive, zeroTol, discarded }: {
-  scaleValue: number | null; scaleStable: boolean; scaleLive: boolean; zeroTol: number; discarded: boolean
-}) {
-  const atZero = scaleStable && scaleValue != null && Math.abs(scaleValue) <= zeroTol
-  return (
-    <>
-      <PanelHeader
-        emoji={discarded ? '🗑' : '📤'}
-        title={discarded ? '破棄した箱を秤から降ろしてください' : '完成した箱を秤から降ろしてください'}
-        subtitle="秤が 0 に戻るまで次に進めません"
-      />
-      <div style={{ padding: '20px 32px 28px', textAlign: 'center' }}>
-        <ScaleReadout value={scaleValue} stable={scaleStable} live={scaleLive} />
-        {atZero ? (
-          <p style={{ fontSize: 14, color: '#059669', fontWeight: 600 }}>
-            ✓ 秤が 0 に戻りました。次の箱の準備をしてください。
-          </p>
-        ) : (
-          <p style={{ fontSize: 14, color: '#7c7494' }}>
-            現在 {scaleValue?.toFixed(1) ?? '---'} g — 0 ± {zeroTol} g になるまでお待ちください
-          </p>
-        )}
-      </div>
-    </>
-  )
-}
-
-function Row({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
-      <span style={{ fontSize: 13, color: '#7c7494' }}>{label}</span>
-      <span style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 14, fontWeight: 700, color: color ?? '#1a1625',
-        fontVariantNumeric: 'tabular-nums',
-      }}>{value}</span>
-    </div>
-  )
-}

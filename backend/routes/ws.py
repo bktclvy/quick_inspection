@@ -11,6 +11,7 @@ from backend.camera import camera
 from backend.product import product_manager
 from backend.scale import scale
 from backend.box_log import append_box_log
+from backend import event_log, worker_manager
 import config
 
 log = logging.getLogger("ws")
@@ -49,24 +50,44 @@ training_mgr = ConnectionManager()
 # 検査状態（_inspection_lock で保護）
 _inspection_lock = asyncio.Lock()
 _active_product_id: str | None = None
+_active_worker_id: str | None = None
+_active_worker_name: str | None = None
+_active_product_name: str | None = None
 _inspection_active = False
 _model_manager = None
 _state_machine = None
 
 
-async def start_inspection(product_id: str, model_manager, state_machine):
-    global _active_product_id, _inspection_active, _model_manager, _state_machine
+async def start_inspection(product_id: str, worker_id: str, model_manager, state_machine):
+    global _active_product_id, _active_worker_id, _active_worker_name, _active_product_name
+    global _inspection_active, _model_manager, _state_machine
     async with _inspection_lock:
         _active_product_id = product_id
+        _active_worker_id = worker_id
+        # 作業者名と製品名は denormalize 用にキャッシュ
+        try:
+            w = worker_manager.get_worker(worker_id) if worker_id else None
+            _active_worker_name = w["name"] if w else None
+        except Exception:
+            _active_worker_name = None
+        try:
+            p = product_manager.get(product_id)
+            _active_product_name = p.name if p else None
+        except Exception:
+            _active_product_name = None
         _inspection_active = True
         _model_manager = model_manager
         _state_machine = state_machine
 
 
 async def stop_inspection():
-    global _active_product_id, _inspection_active
+    global _active_product_id, _active_worker_id, _active_worker_name, _active_product_name
+    global _inspection_active
     async with _inspection_lock:
         _active_product_id = None
+        _active_worker_id = None
+        _active_worker_name = None
+        _active_product_name = None
         _inspection_active = False
         camera.unfreeze_frame()
 
@@ -75,7 +96,36 @@ def get_inspection_status() -> dict:
     return {
         "active": _inspection_active,
         "product_id": _active_product_id,
+        "worker_id": _active_worker_id,
     }
+
+
+def _record_state_events(result: dict) -> None:
+    """state_machine の result dict に含まれる _event / _box_event を SQLite に記録する。
+    検査本体を止めないよう例外は飲み込む。"""
+    try:
+        ev = result.pop("_event", None)
+        if ev:
+            payload = {
+                **ev,
+                "worker_id": _active_worker_id,
+                "worker_name": _active_worker_name,
+                "product_id": _active_product_id,
+                "product_name": _active_product_name,
+            }
+            event_log.record_event(payload)
+        bx = result.pop("_box_event", None)
+        if bx:
+            payload = {
+                **bx,
+                "worker_id": _active_worker_id,
+                "worker_name": _active_worker_name,
+                "product_id": _active_product_id,
+                "product_name": _active_product_name,
+            }
+            event_log.record_box(payload)
+    except Exception:
+        log.warning("event_log 記録失敗", exc_info=True)
 
 
 def _inject_scale(msg: dict) -> None:
@@ -200,6 +250,7 @@ async def inspection_stream(websocket: WebSocket):
                 _confirm_box_result[0] = None
                 if _state_machine.state == InspectionState.WAITING_CONFIRM:
                     result = _state_machine.confirm()
+                    _record_state_events(result)
                     # 箱ログ書き込み（秤モード時のみ box_result が送られてくる）
                     if box_result and _active_product_id:
                         await loop.run_in_executor(
@@ -223,6 +274,7 @@ async def inspection_stream(websocket: WebSocket):
                     await loop.run_in_executor(
                         None, product_manager.save_inspection_log,
                         _active_product_id, frame, result)
+                _record_state_events(result)
                 msg = {"type": "state_update", **result}
                 _inject_scale(msg)
                 await websocket.send_json(msg)
@@ -281,6 +333,7 @@ async def inspection_stream(websocket: WebSocket):
                 if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
                     camera.unfreeze_frame()
 
+                _record_state_events(result)
                 t_total_ai = int((time.monotonic() - t_frame_ai) * 1000)
                 msg = {"type": "state_update", **result,
                        "_timings": {"match_ms": 0, "infer_ms": t_infer_ms, "total_ms": t_total_ai}}
@@ -351,6 +404,7 @@ async def inspection_stream(websocket: WebSocket):
             if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
                 camera.unfreeze_frame()
 
+            _record_state_events(result)
             t_total_ms = int((time.monotonic() - t_frame) * 1000)
             msg = {"type": "state_update", **result,
                    "_timings": {"match_ms": t_match_ms, "infer_ms": t_infer_ms, "total_ms": t_total_ms}}

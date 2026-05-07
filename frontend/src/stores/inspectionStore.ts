@@ -39,7 +39,7 @@ interface InspectionStoreState {
   remainingMs: number
 
   /* actions */
-  startInspection: (productId: string) => Promise<void>
+  startInspection: (productId: string, workerId?: string | null) => Promise<void>
   stopInspection: () => Promise<void>
   handleStateUpdate: (data: InspectionStateUpdate) => void
   loadCounters: (productId: string) => Promise<void>
@@ -74,10 +74,10 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
   triggerRequired: 3,
   remainingMs: 0,
 
-  startInspection: async (productId) => {
+  startInspection: async (productId, workerId = null) => {
     set({ starting: true })
     try {
-      await inspectionApi.start(productId)
+      await inspectionApi.start(productId, workerId ?? null)
       // packingConfig を取得して boxWorkflow を初期化
       let packingConfig = null
       try {

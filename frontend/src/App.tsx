@@ -3,6 +3,8 @@ import { AppHeader } from '@/components/app-header'
 import { ToastContainer } from '@/components/layout/Toast'
 import { InspectPage as InspectionPage } from '@/components/inspect-page'
 import { SetupPageNew as SetupPage } from '@/components/setup-page'
+import { StatsPage } from '@/components/stats-page'
+import { SettingsPage } from '@/components/settings-page'
 
 export default function App() {
   return (
@@ -17,6 +19,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<InspectionPage />} />
             <Route path="/setup" element={<SetupPage />} />
+            <Route path="/stats" element={<StatsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

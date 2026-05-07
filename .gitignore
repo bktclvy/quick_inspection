@@ -4,9 +4,21 @@ __pycache__/
 datasets/
 models/
 products/
+data/
 .env
 .dev-port
 dist/
 frontend/node_modules/
 build/
 build_output/
+
+# ユーザー固有設定 (PC ID 等が含まれるためコミットしない)
+app_config.json
+scale_config.json
+
+# ローカル CLI 設定 (個人ごと)
+.claude/settings.local.json
+
+# その他
+*.log
+*.zip

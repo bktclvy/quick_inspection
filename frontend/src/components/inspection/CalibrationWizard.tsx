@@ -16,11 +16,13 @@ import { useCalibrationStore } from '@/stores/calibrationStore'
 import type { CalibStepId } from '@/stores/calibrationStore'
 import { useInspectionStore } from '@/stores/inspectionStore'
 import { useAppStore } from '@/stores/appStore'
+import { useWorkerStore } from '@/stores/workerStore'
 import { productsApi } from '@/api/products'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { useKeyboard } from '@/hooks/useKeyboard'
 
 const STEP_LABEL: Record<CalibStepId, string> = {
+  worker: '作業者',
   bg: '背景',
   template: '製品登録',
   test: 'テスト',
@@ -34,12 +36,13 @@ export function CalibrationWizard() {
   const close = useCalibrationStore((s) => s.close)
 
   const startInspection = useInspectionStore((s) => s.startInspection)
+  const selectedWorkerId = useWorkerStore((s) => s.selectedWorkerId)
 
   const handleComplete = useCallback(() => {
     if (!productId) return
     close()
-    startInspection(productId)
-  }, [productId, close, startInspection])
+    startInspection(productId, selectedWorkerId)
+  }, [productId, close, startInspection, selectedWorkerId])
 
   if (!isOpen || !productId) return null
 
@@ -82,6 +85,7 @@ export function CalibrationWizard() {
 
           {/* Instructions */}
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            {currentId === 'worker' && <WorkerStep />}
             {currentId === 'bg' && <BackgroundStep productId={productId} />}
             {currentId === 'template' && <ProductStep productId={productId} />}
             {currentId === 'test' && <TestStep onComplete={handleComplete} />}
@@ -155,6 +159,139 @@ function ProgressHeader({ steps, step, onClose }: { steps: CalibStepId[]; step: 
       }}>
         ✕
       </button>
+    </div>
+  )
+}
+
+/* ── Step: Worker (作業者選択) ── */
+
+function WorkerStep() {
+  const workers          = useWorkerStore((s) => s.workers)
+  const selectedWorkerId = useWorkerStore((s) => s.selectedWorkerId)
+  const selectWorker     = useWorkerStore((s) => s.selectWorker)
+  const loadWorkers      = useWorkerStore((s) => s.loadWorkers)
+  const nextStep         = useCalibrationStore((s) => s.nextStep)
+  const close            = useCalibrationStore((s) => s.close)
+
+  useEffect(() => {
+    loadWorkers().catch(() => {})
+  }, [loadWorkers])
+
+  const proceedable = !!selectedWorkerId && !!workers.find((w) => w.id === selectedWorkerId)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', animation: 'calibSlideIn 0.3s ease' }}>
+      <StepCard>
+        <StepIcon color="#8b5cf6">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21v-1a8 8 0 0116 0v1" />
+          </svg>
+        </StepIcon>
+        <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '16px 0 8px' }}>
+          作業者の確認
+        </h3>
+        <p style={{ fontSize: 14, color: '#7c7494', lineHeight: 1.6, margin: 0 }}>
+          今から検査を担当する人を選んでください。判定ログに記録され、統計画面で集計に使われます。
+        </p>
+
+        {workers.length === 0 ? (
+          <div style={{
+            marginTop: 20, padding: 20, borderRadius: 12,
+            background: '#fef3c7', border: '1.5px solid #fcd34d',
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#92400e', marginBottom: 8 }}>
+              作業者がまだ登録されていません
+            </div>
+            <p style={{ fontSize: 12, color: '#78350f', margin: '0 0 14px', lineHeight: 1.6 }}>
+              「設定」→「作業者マスタ」から追加してください。<br />
+              一度ウィザードを閉じて、登録後に再開してください。
+            </p>
+            <button
+              onClick={() => { close(); window.location.hash = ''; window.location.pathname = '/settings' }}
+              style={{
+                height: 38, padding: '0 20px',
+                fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+                color: '#fff', border: 'none', borderRadius: 10, cursor: 'pointer',
+                background: '#92400e',
+              }}
+            >
+              設定画面へ移動
+            </button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+            {workers.map((w) => {
+              const sel = selectedWorkerId === w.id
+              return (
+                <button
+                  key={w.id}
+                  onClick={() => selectWorker(w.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '14px 14px',
+                    background: sel ? 'linear-gradient(135deg, #f5f3ff, #ede9fe)' : '#ffffff',
+                    border: sel ? '2px solid #6366f1' : '2px solid #ebe7e2',
+                    borderRadius: 12,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    transition: 'all 0.15s ease',
+                    boxShadow: sel ? '0 2px 8px rgba(99,102,241,0.15)' : 'none',
+                    textAlign: 'left',
+                  }}
+                >
+                  <div style={{
+                    width: 40, height: 40, borderRadius: '50%',
+                    background: sel ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'linear-gradient(135deg, #c4b5fd, #a78bfa)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 15, fontWeight: 800, color: '#fff', flexShrink: 0,
+                  }}>
+                    {w.name.charAt(0)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 14, fontWeight: 700,
+                      color: sel ? '#1a1625' : '#3d3654',
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>
+                      {w.name}
+                    </div>
+                    {w.code && (
+                      <div style={{
+                        fontSize: 11, color: '#7c7494',
+                        fontFamily: "'JetBrains Mono', monospace", marginTop: 2,
+                      }}>
+                        {w.code}
+                      </div>
+                    )}
+                  </div>
+                  {sel && (
+                    <div style={{
+                      width: 22, height: 22, borderRadius: '50%',
+                      background: '#6366f1', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 11, fontWeight: 800, flexShrink: 0,
+                    }}>✓</div>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {selectedWorkerId && proceedable && (
+          <p style={{ fontSize: 12, color: '#7c7494', marginTop: 16, fontStyle: 'italic' }}>
+            選択は次回起動時に保存されます。
+          </p>
+        )}
+      </StepCard>
+
+      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'flex-end', padding: '16px 0 0' }}>
+        <PrimaryButton onClick={nextStep} disabled={!proceedable}>
+          次へ →
+        </PrimaryButton>
+      </div>
     </div>
   )
 }

@@ -10,10 +10,19 @@ import { cameraApi } from '@/api/camera'
 import { productsApi } from '@/api/products'
 import type { TriggerMode } from '@/types'
 
+type Page = 'inspection' | 'setup' | 'stats' | 'settings'
+
+function pathToPage(pathname: string): Page {
+  if (pathname.startsWith('/setup')) return 'setup'
+  if (pathname.startsWith('/stats')) return 'stats'
+  if (pathname.startsWith('/settings')) return 'settings'
+  return 'inspection'
+}
+
 export function AppHeader() {
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const page = pathname === '/setup' ? 'setup' : 'inspection'
+  const page: Page = pathToPage(pathname)
 
   const products          = useAppStore((s) => s.products)
   const selectedProductId = useAppStore((s) => s.selectedProductId)
@@ -79,6 +88,8 @@ export function AppHeader() {
         {[
           { id: 'inspection', label: '検査', path: '/' },
           { id: 'setup', label: 'セットアップ', path: '/setup' },
+          { id: 'stats', label: '統計', path: '/stats' },
+          { id: 'settings', label: '設定', path: '/settings' },
         ].map((tab) => (
           <button key={tab.id} onClick={() => navigate(tab.path)} style={{
             padding: '7px 20px', borderRadius: 9, border: 'none',
@@ -96,31 +107,35 @@ export function AppHeader() {
 
       <div style={{ flex: 1 }} />
 
-      {/* ── Product Selector ── */}
-      <div style={{ display: page === 'setup' ? 'none' : 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#b0a9bc', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-          製品
-        </span>
-        <select
-          value={selectedProductId ?? ''}
-          onChange={(e) => selectProduct(e.target.value || null)}
-          style={{
-            height: 34, padding: '0 32px 0 12px',
-            fontSize: 13, fontWeight: 500, fontFamily: 'inherit', color: '#3d3654',
-            background: '#ffffff', border: '1.5px solid #e8e4df', borderRadius: 10,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-            appearance: 'none',
-            backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b0a9bc' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")`,
-            backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center',
-            cursor: 'pointer', outline: 'none', minWidth: 140,
-          }}
-        >
-          <option value="">選択してください</option>
-          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </div>
+      {/* ── Product Selector (検査タブのみ) ── */}
+      {page === 'inspection' && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#b0a9bc', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              製品
+            </span>
+            <select
+              value={selectedProductId ?? ''}
+              onChange={(e) => selectProduct(e.target.value || null)}
+              style={{
+                height: 34, padding: '0 32px 0 12px',
+                fontSize: 13, fontWeight: 500, fontFamily: 'inherit', color: '#3d3654',
+                background: '#ffffff', border: '1.5px solid #e8e4df', borderRadius: 10,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                appearance: 'none',
+                backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b0a9bc' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")`,
+                backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center',
+                cursor: 'pointer', outline: 'none', minWidth: 140,
+              }}
+            >
+              <option value="">選択してください</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
 
-      <div style={{ width: 1, height: 24, background: '#ebe7e2', borderRadius: 1 }} />
+          <div style={{ width: 1, height: 24, background: '#ebe7e2', borderRadius: 1 }} />
+        </>
+      )}
 
       {/* ── Inspection Controls ── */}
       {page === 'inspection' && (
@@ -173,31 +188,33 @@ export function AppHeader() {
         </>
       )}
 
-      {/* ── Camera Selector ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b0a9bc" strokeWidth="2">
-          <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
-          <circle cx="12" cy="13" r="4" />
-        </svg>
-        <select
-          value={camIdx}
-          onChange={(e) => { const v = +e.target.value; setCamIdx(v); cameraApi.configure(v).catch(() => {}) }}
-          style={{
-            height: 30, padding: '0 24px 0 8px',
-            fontSize: 12, fontWeight: 500, fontFamily: 'inherit', color: '#5c5470',
-            background: '#ffffff', border: '1.5px solid #e8e4df', borderRadius: 8,
-            boxShadow: '0 1px 2px rgba(0,0,0,0.03)', appearance: 'none',
-            backgroundImage: `url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b0a9bc' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")`,
-            backgroundRepeat: 'no-repeat', backgroundPosition: 'right 7px center',
-            cursor: 'pointer', outline: 'none',
-          }}
-        >
-          {cameras.map((i) => <option key={i} value={i}>Cam {i}</option>)}
-        </select>
-      </div>
+      {/* ── Camera Selector (検査タブのみ) ── */}
+      {page === 'inspection' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b0a9bc" strokeWidth="2">
+            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+          <select
+            value={camIdx}
+            onChange={(e) => { const v = +e.target.value; setCamIdx(v); cameraApi.configure(v).catch(() => {}) }}
+            style={{
+              height: 30, padding: '0 24px 0 8px',
+              fontSize: 12, fontWeight: 500, fontFamily: 'inherit', color: '#5c5470',
+              background: '#ffffff', border: '1.5px solid #e8e4df', borderRadius: 8,
+              boxShadow: '0 1px 2px rgba(0,0,0,0.03)', appearance: 'none',
+              backgroundImage: `url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b0a9bc' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")`,
+              backgroundRepeat: 'no-repeat', backgroundPosition: 'right 7px center',
+              cursor: 'pointer', outline: 'none',
+            }}
+          >
+            {cameras.map((i) => <option key={i} value={i}>Cam {i}</option>)}
+          </select>
+        </div>
+      )}
 
-      {/* ── 秤ウィジェット（接続状態表示 + 未接続時に設定パネル） ── */}
-      <ScaleWidget />
+      {/* ── 秤ウィジェット（検査タブのみ） ── */}
+      {page === 'inspection' && <ScaleWidget />}
 
       {/* ── サーバー接続インジケーター ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

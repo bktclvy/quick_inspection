@@ -9,6 +9,10 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+INSPECTIONS_DB_PATH = os.path.join(DATA_DIR, "inspections.db")
+APP_CONFIG_PATH = os.path.join(BASE_DIR, "app_config.json")
+PENDING_QUEUE_PATH = os.path.join(DATA_DIR, "pending_queue.jsonl")
 
 # カメラ
 CAMERA_INDEX = 0

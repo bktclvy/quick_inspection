@@ -846,6 +846,7 @@ async def training_status():
 
 class InspectionStart(BaseModel):
     product_id: str
+    worker_id: str | None = None
 
 
 @router.post("/inspection/start")
@@ -853,10 +854,16 @@ async def start_inspection(data: InspectionStart):
     from backend.routes.ws import start_inspection as ws_start
     from backend.inference import model_manager
     from backend.state_machine import state_machine
+    from backend import worker_manager
 
     p = product_manager.get(data.product_id)
     if not p:
         raise HTTPException(404, "製品が見つかりません")
+
+    # 作業者の存在確認（指定されている場合）
+    if data.worker_id:
+        if not worker_manager.get_worker(data.worker_id):
+            raise HTTPException(400, "指定された作業者が見つかりません")
 
     # この製品の設定でステートマシンを初期化
     state_machine.setup_product(
@@ -886,8 +893,8 @@ async def start_inspection(data: InspectionStart):
             if os.path.exists(model_path):
                 model_manager.load(roi.model_name, model_path, meta_path)
 
-    await ws_start(data.product_id, model_manager, state_machine)
-    return {"active": True, "product_id": data.product_id}
+    await ws_start(data.product_id, data.worker_id, model_manager, state_machine)
+    return {"active": True, "product_id": data.product_id, "worker_id": data.worker_id}
 
 
 @router.post("/inspection/stop")

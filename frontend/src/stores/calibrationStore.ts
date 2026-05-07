@@ -13,7 +13,7 @@ interface TestResult {
   confidence: number
 }
 
-export type CalibStepId = 'bg' | 'template' | 'test'
+export type CalibStepId = 'worker' | 'bg' | 'template' | 'test'
 
 interface CalibrationState {
   isOpen: boolean
@@ -58,20 +58,21 @@ interface CalibrationState {
 }
 
 function stepsFor(mode: TriggerMode): CalibStepId[] {
+  // 全モードで「作業者」を最初のステップとして要求
   // AI トリガー: 取出しも AI 判定なので背景不要
-  if (mode === 'ai') return ['test']
+  if (mode === 'ai') return ['worker', 'test']
   // 手動: 取出し検知に背景が要るがテンプレートは不要
-  if (mode === 'manual') return ['bg', 'test']
+  if (mode === 'manual') return ['worker', 'bg', 'test']
   // auto_background: 背景のみ
-  if (mode === 'auto_background') return ['bg', 'test']
+  if (mode === 'auto_background') return ['worker', 'bg', 'test']
   // auto_template: 従来通り全部
-  return ['bg', 'template', 'test']
+  return ['worker', 'bg', 'template', 'test']
 }
 
 const INIT = {
   isOpen: false,
   productId: null as string | null,
-  steps: ['bg', 'template', 'test'] as CalibStepId[],
+  steps: ['worker', 'bg', 'template', 'test'] as CalibStepId[],
   currentStep: 0,
   bgCaptured: false,
   bgAlreadyExists: false,

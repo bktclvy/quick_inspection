@@ -9,6 +9,8 @@ IDLE → DETECTING → INSPECTING → JUDGED → WAITING_REMOVAL → IDLE
 import os
 import json
 import time
+import uuid
+import datetime
 import threading
 from enum import Enum
 import config
@@ -68,6 +70,13 @@ class InspectionStateMachine:
         self.count_ok: int = 0
         self.count_ng: int = 0
         self._counter_file: str | None = None
+
+        # サイクル/箱トレーシング
+        self._cycle_start_time: float | None = None      # IDLE → DETECTING の時刻
+        self._current_box_id: str | None = None          # 現在埋めている箱のID
+        self._box_started_at: float | None = None        # 箱の最初の OK の cycle_start
+        self._pending_event: dict | None = None          # JUDGED で構築、IDLE で flush
+        self._pending_box: dict | None = None            # 箱完成時に構築、IDLE で flush
 
     # ── 製品セットアップ ──────────────────────────────────
 
@@ -145,10 +154,11 @@ class InspectionStateMachine:
                 self._trigger_count = 0
 
             if self._trigger_count >= self.trigger_frames:
-                # 設置検知 → 安定待ちへ
+                # 設置検知 → 安定待ちへ。サイクル計測開始
                 self.state = InspectionState.DETECTING
                 self._trigger_count = 0
                 self._stability_count = 0
+                self._cycle_start_time = time.time()
                 return {"state": "detecting", "trigger_mode": "auto",
                         "counters": counters,
                         "stability_count": 0,
@@ -168,9 +178,10 @@ class InspectionStateMachine:
             if valid:
                 all_match = all(s >= self.match_threshold for s in valid.values())
                 if not all_match:
-                    # 製品が外れた
+                    # 製品が外れた（判定前にアボート、サイクル計測リセット）
                     self.state = InspectionState.IDLE
                     self._stability_count = 0
+                    self._cycle_start_time = None
                     return {"state": "idle", "trigger_mode": "auto",
                             "counters": counters, **diag}
 
@@ -210,6 +221,7 @@ class InspectionStateMachine:
             else:
                 self.count_ng += 1
             self._save_counters()
+            self._build_judgment_event(judgment)
             counters = self._get_counters_internal()
 
             return {"state": "judged", "trigger_mode": "auto",
@@ -256,8 +268,9 @@ class InspectionStateMachine:
                     self._trigger_count = 0
                     self._removal_count = 0
                     self._stability_count = 0
-                    return {"state": "idle", "trigger_mode": "auto",
-                            "counters": counters, **diag}
+                    result = {"state": "idle", "trigger_mode": "auto",
+                              "counters": counters, **diag}
+                    return self._attach_cycle_outputs(result)
 
             # 表示完了だが取出し未確認 → WAITING_REMOVAL
             if display_done:
@@ -301,8 +314,9 @@ class InspectionStateMachine:
                     self._trigger_count = 0
                     self._removal_count = 0
                     self._stability_count = 0
-                    return {"state": "idle", "trigger_mode": "auto",
-                            "counters": counters, **diag}
+                    result = {"state": "idle", "trigger_mode": "auto",
+                              "counters": counters, **diag}
+                    return self._attach_cycle_outputs(result)
 
             result = {"state": "waiting_removal", "trigger_mode": "auto",
                       "counters": counters, **diag,
@@ -332,7 +346,9 @@ class InspectionStateMachine:
             self._removal_count = 0
             self._stability_count = 0
             self._confirm_reason = ""
-            return {"state": "idle", "trigger_mode": self.trigger_mode, "counters": self._get_counters_internal()}
+            result = {"state": "idle", "trigger_mode": self.trigger_mode,
+                      "counters": self._get_counters_internal()}
+            return self._attach_cycle_outputs(result)
 
     # ── AI トリガーモード ─────────────────────────────────
 
@@ -366,6 +382,10 @@ class InspectionStateMachine:
                 judgment = self._make_judgment(roi_results)
                 self.last_judgment = judgment
                 self._judgment_time = time.time()
+                # AI トリガーモードは DETECTING を経由しないので、サイクル開始は
+                # 判定時刻として扱う（cycle_ms ≒ 0、inspection_ms ≒ 0）
+                if self._cycle_start_time is None:
+                    self._cycle_start_time = self._judgment_time
                 self.state = InspectionState.JUDGED
                 self._ai_trigger_count = 0
                 self.count_total += 1
@@ -374,6 +394,7 @@ class InspectionStateMachine:
                 else:
                     self.count_ng += 1
                 self._save_counters()
+                self._build_judgment_event(judgment)
                 counters = self._get_counters_internal()
                 return {"state": "judged", "trigger_mode": "ai",
                         "counters": counters, **diag, **judgment}
@@ -417,6 +438,8 @@ class InspectionStateMachine:
             judgment = self._make_judgment(roi_results)
             self.last_judgment = judgment
             self._judgment_time = time.time()
+            # 手動モードは DETECTING を経由しないので、サイクル開始は判定時刻
+            self._cycle_start_time = self._judgment_time
             self.state = InspectionState.JUDGED
 
             self.count_total += 1
@@ -425,6 +448,7 @@ class InspectionStateMachine:
             else:
                 self.count_ng += 1
             self._save_counters()
+            self._build_judgment_event(judgment)
 
             return {"state": "judged", "trigger_mode": "manual",
                     "counters": self._get_counters_internal(), **judgment}
@@ -485,6 +509,82 @@ class InspectionStateMachine:
         self._ai_trigger_count = 0
         self.last_judgment = None
         self._judgment_time = None
+        self._cycle_start_time = None
+        self._current_box_id = None
+        self._box_started_at = None
+        self._pending_event = None
+        self._pending_box = None
+
+    # ── サイクル/箱イベント生成ヘルパー ─────────────────
+
+    @staticmethod
+    def _ts_iso() -> str:
+        return datetime.datetime.now().isoformat(timespec="milliseconds")
+
+    def _build_judgment_event(self, judgment: dict) -> None:
+        """JUDGED 遷移時に呼ぶ。_pending_event と _pending_box を構築する。
+        ロック取得済み前提。"""
+        is_ok = judgment.get("overall_judgment", "").upper() == "OK"
+        cycle_start = self._cycle_start_time
+        judgment_time = self._judgment_time or time.time()
+        inspection_ms = (
+            int((judgment_time - cycle_start) * 1000)
+            if cycle_start is not None else None
+        )
+
+        # 箱割り当て
+        box_id: str | None = None
+        box_seq: int | None = None
+        pieces = self.pieces_per_box if self.pieces_per_box > 0 else None
+        if is_ok and pieces:
+            if self._current_box_id is None:
+                self._current_box_id = uuid.uuid4().hex
+                self._box_started_at = cycle_start if cycle_start is not None else judgment_time
+            box_id = self._current_box_id
+            # count_ok は既にこの判定で +1 されている
+            box_seq = ((self.count_ok - 1) % pieces) + 1
+
+        self._pending_event = {
+            "id": uuid.uuid4().hex,
+            "ts": self._ts_iso(),
+            "result": "OK" if is_ok else "NG",
+            "confidence": judgment.get("overall_confidence"),
+            "inspection_ms": inspection_ms,
+            "box_id": box_id,
+            "box_seq": box_seq,
+            "pieces_per_box": pieces,
+        }
+
+        # 箱完成検出
+        if is_ok and pieces and self.count_ok % pieces == 0:
+            box_started = self._box_started_at or judgment_time
+            self._pending_box = {
+                "id": self._current_box_id or uuid.uuid4().hex,
+                "started_at": datetime.datetime.fromtimestamp(box_started).isoformat(timespec="milliseconds"),
+                "completed_at": self._ts_iso(),
+                "pieces_per_box": pieces,
+                "box_duration_ms": int((time.time() - box_started) * 1000),
+            }
+            # 次の箱に向けてリセット
+            self._current_box_id = None
+            self._box_started_at = None
+
+    def _attach_cycle_outputs(self, result: dict) -> dict:
+        """IDLE 復帰時に呼ぶ。pending イベントを result dict に乗せて返す。
+        ロック取得済み前提。"""
+        if self._pending_event:
+            ev = dict(self._pending_event)
+            if self._cycle_start_time is not None:
+                ev["cycle_ms"] = int((time.time() - self._cycle_start_time) * 1000)
+            else:
+                ev["cycle_ms"] = ev.get("inspection_ms")
+            result["_event"] = ev
+            self._pending_event = None
+        if self._pending_box:
+            result["_box_event"] = dict(self._pending_box)
+            self._pending_box = None
+        self._cycle_start_time = None
+        return result
 
     # ── 判定ロジック ──────────────────────────────────────
 

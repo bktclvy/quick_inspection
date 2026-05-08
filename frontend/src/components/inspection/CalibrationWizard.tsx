@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import { useCalibrationStore } from '@/stores/calibrationStore'
 import type { CalibStepId } from '@/stores/calibrationStore'
 import { useInspectionStore } from '@/stores/inspectionStore'
@@ -172,6 +173,7 @@ function WorkerStep() {
   const loadWorkers      = useWorkerStore((s) => s.loadWorkers)
   const nextStep         = useCalibrationStore((s) => s.nextStep)
   const close            = useCalibrationStore((s) => s.close)
+  const navigate         = useNavigate()
 
   useEffect(() => {
     loadWorkers().catch(() => {})
@@ -209,7 +211,7 @@ function WorkerStep() {
               一度ウィザードを閉じて、登録後に再開してください。
             </p>
             <button
-              onClick={() => { close(); window.location.hash = ''; window.location.pathname = '/settings' }}
+              onClick={() => { close(); navigate('/settings') }}
               style={{
                 height: 38, padding: '0 20px',
                 fontSize: 13, fontWeight: 700, fontFamily: 'inherit',

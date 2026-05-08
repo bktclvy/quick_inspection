@@ -2,55 +2,88 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useInspectionStore } from '../stores/inspectionStore'
 import type { InspectionStateUpdate } from '../types/ws'
 
+let sharedWs: WebSocket | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+let activeConsumers = 0
+let latestStateHandler: ((data: InspectionStateUpdate) => void) | null = null
+
+function clearReconnectTimer() {
+  clearTimeout(reconnectTimer)
+  reconnectTimer = undefined
+}
+
+function connectSharedWS() {
+  if (sharedWs && (
+    sharedWs.readyState === WebSocket.OPEN ||
+    sharedWs.readyState === WebSocket.CONNECTING
+  )) {
+    return
+  }
+
+  clearReconnectTimer()
+
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const ws = new WebSocket(`${protocol}//${location.host}/ws/inspection`)
+  sharedWs = ws
+
+  ws.onmessage = (e) => {
+    try {
+      const data: InspectionStateUpdate = JSON.parse(e.data)
+      if (data.type === 'state_update') {
+        latestStateHandler?.(data)
+      }
+    } catch { /* ignore parse errors */ }
+  }
+
+  ws.onclose = () => {
+    if (sharedWs === ws) sharedWs = null
+    if (activeConsumers > 0) {
+      clearReconnectTimer()
+      reconnectTimer = setTimeout(connectSharedWS, 1000)
+    }
+  }
+
+  ws.onerror = () => ws.close()
+}
+
+function closeSharedWSIfUnused() {
+  if (activeConsumers > 0) return
+
+  clearReconnectTimer()
+  if (sharedWs) {
+    const ws = sharedWs
+    sharedWs = null
+    ws.onclose = null
+    ws.onerror = null
+    ws.close()
+  }
+}
+
 export function useInspectionWS() {
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const subscribedRef = useRef(false)
   const handleStateUpdate = useInspectionStore((s) => s.handleStateUpdate)
   const inspecting = useInspectionStore((s) => s.inspecting)
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
-    // 前回の再接続タイマーをキャンセル
-    clearTimeout(reconnectTimer.current)
-
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${location.host}/ws/inspection`)
-
-    ws.onmessage = (e) => {
-      try {
-        const data: InspectionStateUpdate = JSON.parse(e.data)
-        if (data.type === 'state_update') {
-          handleStateUpdate(data)
-        }
-      } catch { /* ignore parse errors */ }
-    }
-
-    ws.onclose = () => {
-      wsRef.current = null
-      if (inspecting) {
-        clearTimeout(reconnectTimer.current)
-        reconnectTimer.current = setTimeout(connect, 1000)
-      }
-    }
-
-    ws.onerror = () => ws.close()
-    wsRef.current = ws
-  }, [handleStateUpdate, inspecting])
+  latestStateHandler = handleStateUpdate
 
   useEffect(() => {
+    if (subscribedRef.current) return
     if (inspecting) {
-      connect()
+      subscribedRef.current = true
+      activeConsumers += 1
+      connectSharedWS()
     }
     return () => {
-      clearTimeout(reconnectTimer.current)
-      wsRef.current?.close()
-      wsRef.current = null
+      if (!subscribedRef.current) return
+      subscribedRef.current = false
+      activeConsumers = Math.max(0, activeConsumers - 1)
+      closeSharedWSIfUnused()
     }
-  }, [inspecting, connect])
+  }, [inspecting])
 
   const send = useCallback((msg: Record<string, unknown>) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg))
+    if (sharedWs?.readyState === WebSocket.OPEN) {
+      sharedWs.send(JSON.stringify(msg))
     }
   }, [])
 

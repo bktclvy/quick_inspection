@@ -10,7 +10,7 @@
  * 各撮影ステップでは既存データを「そのまま使う」選択肢も出す。
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useCalibrationStore } from '@/stores/calibrationStore'
@@ -20,7 +20,9 @@ import { useAppStore } from '@/stores/appStore'
 import { useWorkerStore } from '@/stores/workerStore'
 import { productsApi } from '@/api/products'
 import { CameraFeed } from '@/components/camera/CameraFeed'
+import { ROICanvas } from '@/components/camera/ROICanvas'
 import { useKeyboard } from '@/hooks/useKeyboard'
+import { useInspectionWS } from '@/hooks/useInspectionWS'
 
 const STEP_LABEL: Record<CalibStepId, string> = {
   worker: '作業者',
@@ -39,6 +41,12 @@ export function CalibrationWizard() {
   const startInspection = useInspectionStore((s) => s.startInspection)
   const selectedWorkerId = useWorkerStore((s) => s.selectedWorkerId)
 
+  // ROI 結果オーバーレイ用
+  const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
+  const rois = useAppStore((s) => s.rois)
+  const inspectState = useInspectionStore((s) => s.currentState)
+  const roiResults = useInspectionStore((s) => s.roiResults)
+
   const handleComplete = useCallback(() => {
     if (!productId) return
     close()
@@ -48,6 +56,9 @@ export function CalibrationWizard() {
   if (!isOpen || !productId) return null
 
   const currentId = steps[step]
+  const showRoiOverlay = currentId === 'test'
+  const hasResults = showRoiOverlay && roiResults.length > 0 &&
+    (inspectState === 'judged' || inspectState === 'waiting_removal' || inspectState === 'waiting_confirm')
 
   return createPortal(
     <div style={{
@@ -80,8 +91,18 @@ export function CalibrationWizard() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             position: 'relative',
           }}>
-            <CameraFeed />
-            {currentId === 'template' && <TriggerOverlay />}
+            <CameraFeed onImgRef={setImgEl} />
+            {(currentId === 'template' || currentId === 'test') && <TriggerOverlay />}
+            {showRoiOverlay && imgEl && (
+              <ROICanvas
+                imgEl={imgEl}
+                rois={rois}
+                readOnly
+                results={hasResults
+                  ? roiResults.map((r) => ({ roi_id: r.roi_id, judgment: r.judgment }))
+                  : undefined}
+              />
+            )}
           </div>
 
           {/* Instructions */}
@@ -99,6 +120,10 @@ export function CalibrationWizard() {
         @keyframes calibPop { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
         @keyframes calibSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes calibCheck { from { transform: scale(0); } to { transform: scale(1); } }
+        @keyframes calibPulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.3); opacity: 0.6; }
+        }
       `}</style>
     </div>,
     document.body,
@@ -492,160 +517,285 @@ function ProductStep({ productId }: { productId: string }) {
   )
 }
 
-/* ── Step 3: Test Inspection ── */
+/* ── Step: Free Test (自由検査モード) ── */
 
 function TestStep({ onComplete }: { onComplete: () => void }) {
-  const testPhase = useCalibrationStore((s) => s.testPhase)
-  const testResults = useCalibrationStore((s) => s.testResults)
-  const testRunning = useCalibrationStore((s) => s.testRunning)
-  const ngConfirmed = useCalibrationStore((s) => s.ngConfirmed)
-  const runTest = useCalibrationStore((s) => s.runTest)
-  const confirmTest = useCalibrationStore((s) => s.confirmTest)
-  const retryTest = useCalibrationStore((s) => s.retryTest)
-  const prevStep = useCalibrationStore((s) => s.prevStep)
+  const productId        = useCalibrationStore((s) => s.productId)
+  const prevStep         = useCalibrationStore((s) => s.prevStep)
+  const selectedWorkerId = useWorkerStore((s) => s.selectedWorkerId)
 
-  const isNgPhase = testPhase === 'ng'
-  const isOkPhase = testPhase === 'ok'
-  const isDone = testPhase === 'done'
+  const startInspection  = useInspectionStore((s) => s.startInspection)
+  const stopInspection   = useInspectionStore((s) => s.stopInspection)
+  const inspecting       = useInspectionStore((s) => s.inspecting)
+  const state            = useInspectionStore((s) => s.currentState)
+  const judgment         = useInspectionStore((s) => s.overallJudgment)
+  const confidence       = useInspectionStore((s) => s.overallConfidence)
+  const roiResults       = useInspectionStore((s) => s.roiResults)
+  const history          = useInspectionStore((s) => s.history)
+  const triggerMode      = useInspectionStore((s) => s.triggerMode)
+  const triggerCount     = useInspectionStore((s) => s.triggerCount)
+  const triggerRequired  = useInspectionStore((s) => s.triggerRequired)
+  const stabilityCount   = useInspectionStore((s) => s.stabilityCount)
+  const stabilityRequired = useInspectionStore((s) => s.stabilityRequired)
+  const bgMatch          = useInspectionStore((s) => s.bgMatch)
+  const matchScores      = useInspectionStore((s) => s.matchScores)
 
-  // Space キー: 結果が出ていなければ検査テスト、出ていれば次へ
-  useKeyboard('Space', () => {
-    if (isDone) { onComplete(); return }
-    if (testRunning) return
-    if (testResults) confirmTest()
-    else runTest()
-  }, true)
+  const { send } = useInspectionWS()
+
+  // 試運転中に遷移するときは cleanup の stop を抑止
+  const transitioningRef = useRef(false)
+
+  // マウント時に test_mode で検査開始
+  useEffect(() => {
+    if (!productId) return
+    transitioningRef.current = false
+    startInspection(productId, selectedWorkerId, true).catch(() => {})
+    return () => {
+      if (!transitioningRef.current) {
+        stopInspection().catch(() => {})
+      }
+    }
+  }, [productId, selectedWorkerId, startInspection, stopInspection])
+
+  // OK/NG が一度でも判定されたか
+  const okSeen = useMemo(() => history.some((h) => h.judgment === 'ok'), [history])
+  const ngSeen = useMemo(() => history.some((h) => h.judgment === 'ng'), [history])
+
+  // 手動アクション (本番 inspect-page と同じロジック)
+  const manual = useCallback(() => {
+    if (!inspecting) return
+    if (state === 'waiting_confirm') {
+      send({ action: 'confirm' })
+      return
+    }
+    if (state === 'idle') {
+      send({ action: 'manual_trigger' })
+    } else if (state === 'judged' || state === 'waiting_removal') {
+      send({ action: 'confirm' })
+    }
+  }, [inspecting, state, send])
+
+  useKeyboard('Space', manual, true)
+
+  const handleStartReal = useCallback(async () => {
+    transitioningRef.current = true
+    await stopInspection()
+    onComplete()
+  }, [stopInspection, onComplete])
+
+  // 状態テキスト
+  const triggerScore = matchScores?.trigger ?? null
+  let statusText = ''
+  let statusColor = '#7c7494'
+  if (!inspecting) {
+    statusText = '起動中…'
+  } else if (state === 'idle') {
+    if (triggerMode === 'manual') {
+      statusText = 'Space または「1回判定」で検査'
+    } else if (triggerMode === 'ai') {
+      statusText = `AI 検知待ち  BG ${bgMatch != null ? (bgMatch * 100).toFixed(0) + '%' : '--'}`
+    } else if (triggerRequired > 0 && triggerCount > 0) {
+      statusText = `設置検知中 ${triggerCount}/${triggerRequired}`
+      statusColor = '#6366f1'
+    } else {
+      statusText = '製品設置待ち'
+    }
+  } else if (state === 'detecting') {
+    statusText = `安定待ち ${stabilityCount}/${stabilityRequired}`
+    statusColor = '#6366f1'
+  } else if (state === 'inspecting') {
+    statusText = '判定中…'
+    statusColor = '#8b5cf6'
+  } else if (state === 'judged') {
+    statusText = `判定: ${judgment ?? '--'}`
+    statusColor = judgment === 'OK' ? '#10b981' : '#ef4444'
+  } else if (state === 'waiting_removal') {
+    statusText = '製品の取出しを待っています'
+    statusColor = '#f59e0b'
+  } else if (state === 'waiting_confirm') {
+    statusText = 'Space で次へ'
+    statusColor = '#f59e0b'
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', animation: 'calibSlideIn 0.3s ease' }}>
       <StepCard>
-        <StepIcon color={isNgPhase ? '#ef4444' : '#10b981'}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M9 11l3 3L22 4" />
-            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
-          </svg>
-        </StepIcon>
-
-        {!isDone ? (
-          <>
-            <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '16px 0 8px' }}>
-              {isNgPhase ? 'NG品でテスト' : 'OK品でテスト'}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <StepIcon color="#6366f1">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M9 11l3 3L22 4" />
+              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+            </svg>
+          </StepIcon>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '6px 0 6px' }}>
+              自由に検査してみる
             </h3>
-            <p style={{ fontSize: 14, color: '#7c7494', lineHeight: 1.6, margin: 0 }}>
-              {isNgPhase
-                ? '不良品（NG品）を置いて、正しく検出されるか確認してください。'
-                : '良品（OK品）を置いて、正しく判定されるか確認してください。'}
+            <p style={{ fontSize: 13, color: '#7c7494', lineHeight: 1.55, margin: 0 }}>
+              本番と同じトリガーで動いています。OK品 / NG品を置き換えて確認できます。
+              準備ができたら「検査を開始する」でいつでも本番へ。
             </p>
+          </div>
+        </div>
 
-            {/* Progress dots */}
-            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+        {/* ライブ状態 */}
+        <div style={{
+          marginTop: 16, padding: '12px 14px', borderRadius: 12,
+          background: '#faf9f7', border: `1.5px solid ${statusColor}33`,
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <div style={{
+            width: 10, height: 10, borderRadius: '50%',
+            background: statusColor,
+            boxShadow: `0 0 0 4px ${statusColor}22`,
+            animation: state === 'idle' && triggerCount > 0 ? 'calibPulse 1s ease infinite' : 'none',
+          }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: statusColor }}>{statusText}</div>
+            {triggerScore != null && (
               <div style={{
-                padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                background: isNgPhase ? '#fef2f2' : '#f0fdf4',
-                color: isNgPhase ? '#dc2626' : '#166534',
-                border: `1.5px solid ${isNgPhase ? '#fca5a5' : '#bbf7d0'}`,
+                fontSize: 11, color: '#9994a8', marginTop: 2,
+                fontFamily: "'JetBrains Mono', monospace",
               }}>
-                {ngConfirmed ? '✓ NG品確認済' : '① NG品テスト'}
-              </div>
-              <div style={{
-                padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                background: isOkPhase ? '#f0fdf4' : '#f7f5f2',
-                color: isOkPhase ? '#166534' : '#b0a9bc',
-                border: `1.5px solid ${isOkPhase ? '#bbf7d0' : '#ebe7e2'}`,
-              }}>
-                {isDone ? '✓ OK品確認済' : '② OK品テスト'}
-              </div>
-            </div>
-
-            {/* Results */}
-            {testResults && (
-              <div style={{ marginTop: 16, animation: 'calibSlideIn 0.3s ease' }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#9994a8', marginBottom: 8 }}>検査結果</div>
-                {testResults.map((r) => (
-                  <div key={r.roi_id} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '10px 14px', borderRadius: 10, marginBottom: 6,
-                    background: '#fff', border: '1px solid #ebe7e2',
-                  }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#3d3654' }}>{r.roi_name}</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{
-                        fontSize: 12, fontWeight: 700,
-                        color: r.judgment === 'ok' ? '#10b981' : '#ef4444',
-                      }}>
-                        {r.judgment.toUpperCase()}
-                      </span>
-                      <span style={{
-                        fontSize: 11, color: '#9994a8',
-                        fontFamily: "'JetBrains Mono', monospace",
-                      }}>
-                        {(r.confidence * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <PrimaryButton onClick={confirmTest} style={{ flex: 1 }}>
-                    結果OK、次へ
-                  </PrimaryButton>
-                  <SecondaryButton onClick={retryTest} style={{ flex: 1 }}>
-                    やり直す
-                  </SecondaryButton>
-                </div>
+                trigger {(triggerScore * 100).toFixed(0)}%
+                {state === 'judged' && confidence != null && (
+                  <>  ·  conf {(confidence * 100).toFixed(0)}%</>
+                )}
               </div>
             )}
-          </>
-        ) : (
-          <>
-            <h3 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: '16px 0 8px' }}>
-              準備完了
-            </h3>
-            <p style={{ fontSize: 14, color: '#7c7494', lineHeight: 1.6, margin: 0 }}>
-              キャリブレーションが完了しました。検査を開始できます。
-            </p>
-            <div style={{
-              marginTop: 20, padding: 16, borderRadius: 12,
-              background: '#f0fdf4', border: '1px solid #bbf7d0',
-              animation: 'calibSlideIn 0.3s ease',
-            }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <CheckItem label="背景登録" />
-                <CheckItem label="製品テンプレート登録" />
-                <CheckItem label="NG品テスト" />
-                <CheckItem label="OK品テスト" />
+          </div>
+        </div>
+
+        {/* ROI 結果 (判定中) */}
+        {(state === 'judged' || state === 'waiting_removal' || state === 'waiting_confirm') && roiResults.length > 0 && (
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {roiResults.map((r) => (
+              <div key={r.roi_id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '8px 12px', borderRadius: 10,
+                background: '#fff', border: '1px solid #ebe7e2',
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#3d3654' }}>{r.roi_name}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{
+                    fontSize: 12, fontWeight: 700,
+                    color: r.judgment === 'ok' ? '#10b981' : '#ef4444',
+                  }}>
+                    {r.judgment.toUpperCase()}
+                  </span>
+                  <span style={{
+                    fontSize: 11, color: '#9994a8',
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}>
+                    {(r.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
               </div>
+            ))}
+          </div>
+        )}
+
+        {/* OK/NG 確認 badge */}
+        <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          <SeenBadge label="OK 判定" seen={okSeen} color="#10b981" />
+          <SeenBadge label="NG 判定" seen={ngSeen} color="#ef4444" />
+        </div>
+
+        {/* 判定ログ */}
+        {history.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#9994a8', marginBottom: 6, letterSpacing: 0.5 }}>
+              判定ログ
             </div>
-          </>
+            <div style={{
+              maxHeight: 140, overflowY: 'auto',
+              display: 'flex', flexDirection: 'column', gap: 4,
+            }}>
+              {history.slice(0, 10).map((h) => {
+                const isOk = h.judgment === 'ok'
+                return (
+                  <div key={h.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '6px 10px', borderRadius: 8,
+                    background: isOk ? '#f0fdf4' : '#fef2f2',
+                    border: `1px solid ${isOk ? '#bbf7d0' : '#fecaca'}`,
+                    fontSize: 12,
+                  }}>
+                    <span style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      color: '#9994a8', fontSize: 11,
+                    }}>
+                      {h.timestamp.toLocaleTimeString('ja-JP', { hour12: false })}
+                    </span>
+                    <span style={{
+                      fontWeight: 700,
+                      color: isOk ? '#15803d' : '#b91c1c',
+                    }}>
+                      {h.judgment.toUpperCase()}
+                    </span>
+                    <span style={{
+                      marginLeft: 'auto',
+                      fontFamily: "'JetBrains Mono', monospace",
+                      color: '#7c7494', fontSize: 11,
+                    }}>
+                      {(h.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )}
       </StepCard>
 
-      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', padding: '16px 0 0' }}>
-        {!isDone ? (
-          <>
-            <SecondaryButton onClick={prevStep}>← 戻る</SecondaryButton>
-            {!testResults && (
-              <PrimaryButton onClick={runTest} disabled={testRunning}>
-                {testRunning ? '検査中…' : '検査テスト'}
-              </PrimaryButton>
-            )}
-          </>
-        ) : (
-          <>
-            <div />
-            <button onClick={onComplete} style={{
-              height: 48, padding: '0 32px',
-              fontSize: 15, fontWeight: 700,
-              fontFamily: "'DM Sans', system-ui, sans-serif",
-              color: '#fff', border: 'none', borderRadius: 12, cursor: 'pointer',
-              background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
-              boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
-            }}>
-              検査を開始する
-            </button>
-          </>
-        )}
+      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', padding: '16px 0 0', gap: 10 }}>
+        <SecondaryButton onClick={prevStep}>← 戻る</SecondaryButton>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <SecondaryButton onClick={manual} disabled={!inspecting}>
+            1回判定 (Space)
+          </SecondaryButton>
+          <button onClick={handleStartReal} style={{
+            height: 44, padding: '0 24px',
+            fontSize: 14, fontWeight: 700,
+            fontFamily: "'DM Sans', system-ui, sans-serif",
+            color: '#fff', border: 'none', borderRadius: 12, cursor: 'pointer',
+            background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+            boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
+          }}>
+            検査を開始する →
+          </button>
+        </div>
       </div>
+    </div>
+  )
+}
+
+function SeenBadge({ label, seen, color }: { label: string; seen: boolean; color: string }) {
+  return (
+    <div style={{
+      flex: 1,
+      padding: '8px 12px', borderRadius: 10,
+      background: seen ? `${color}14` : '#f7f5f2',
+      border: `1.5px solid ${seen ? color : '#ebe7e2'}`,
+      display: 'flex', alignItems: 'center', gap: 8,
+      transition: 'all 0.3s ease',
+    }}>
+      <div style={{
+        width: 18, height: 18, borderRadius: '50%',
+        background: seen ? color : '#d4d0dc',
+        color: '#fff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 11, fontWeight: 800,
+        animation: seen ? 'calibCheck 0.3s ease' : 'none',
+      }}>
+        {seen ? '✓' : '·'}
+      </div>
+      <span style={{
+        fontSize: 12, fontWeight: 600,
+        color: seen ? color : '#9994a8',
+      }}>
+        {label}{seen ? ' 確認済' : ' 未確認'}
+      </span>
     </div>
   )
 }
@@ -740,19 +890,6 @@ function StepIcon({ color, children }: { color: string; children: React.ReactNod
       color, display: 'flex', alignItems: 'center', justifyContent: 'center',
     }}>
       {children}
-    </div>
-  )
-}
-
-function CheckItem({ label }: { label: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{
-        width: 18, height: 18, borderRadius: '50%', background: '#10b981',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: '#fff', fontSize: 10,
-      }}>✓</div>
-      <span style={{ fontSize: 13, fontWeight: 600, color: '#166534' }}>{label}</span>
     </div>
   )
 }

@@ -80,7 +80,7 @@ class InspectionStateMachine:
 
     # ── 製品セットアップ ──────────────────────────────────
 
-    def setup_product(self, inspection_config: dict, counter_file: str):
+    def setup_product(self, inspection_config: dict, counter_file: str | None):
         with self._lock:
             self._reset_internal()
             for key in ("match_threshold", "trigger_frames", "removal_diff_threshold",
@@ -92,7 +92,10 @@ class InspectionStateMachine:
                     if hasattr(self, key):
                         setattr(self, key, inspection_config[key])
             self._counter_file = counter_file
-            self._load_counters()
+            if counter_file:
+                self._load_counters()
+            else:
+                self.count_total = self.count_ok = self.count_ng = 0
 
     # ── 設定更新 ──────────────────────────────────────────
 

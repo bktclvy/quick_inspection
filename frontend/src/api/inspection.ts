@@ -1,8 +1,12 @@
 import { api } from './client'
 
 export const inspectionApi = {
-  start: (productId: string, workerId: string | null = null) =>
-    api('/inspection/start').post({ product_id: productId, worker_id: workerId }),
+  start: (productId: string, workerId: string | null = null, testMode: boolean = false) =>
+    api('/inspection/start').post({
+      product_id: productId,
+      worker_id: workerId,
+      test_mode: testMode,
+    }),
 
   stop: () => api('/inspection/stop').post(),
 

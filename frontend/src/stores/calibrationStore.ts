@@ -3,16 +3,6 @@ import { productsApi } from '../api/products'
 import { Toast } from '../components/layout/Toast'
 import type { TriggerMode } from '../types'
 
-type TestPhase = 'ng' | 'ok' | 'done'
-
-interface TestResult {
-  roi_id: string
-  roi_name: string
-  judgment: string
-  predicted_class: string
-  confidence: number
-}
-
 export type CalibStepId = 'worker' | 'bg' | 'template' | 'test'
 
 interface CalibrationState {
@@ -34,13 +24,6 @@ interface CalibrationState {
   templateUseExisting: boolean
   liveScore: number | null
 
-  // Step: test
-  testPhase: TestPhase
-  testResults: TestResult[] | null
-  testRunning: boolean
-  ngConfirmed: boolean
-  okConfirmed: boolean
-
   // Actions
   open: (productId: string, mode: TriggerMode, bgExists: boolean, templateExists: boolean) => void
   close: () => void
@@ -52,9 +35,6 @@ interface CalibrationState {
   captureTemplate: (templateCount: number) => Promise<void>
   keepExistingTemplate: () => void
   setLiveScore: (score: number | null) => void
-  runTest: () => Promise<void>
-  confirmTest: () => void
-  retryTest: () => void
 }
 
 function stepsFor(mode: TriggerMode): CalibStepId[] {
@@ -83,11 +63,6 @@ const INIT = {
   templateCapturing: false,
   templateUseExisting: false,
   liveScore: null,
-  testPhase: 'ng' as TestPhase,
-  testResults: null,
-  testRunning: false,
-  ngConfirmed: false,
-  okConfirmed: false,
 }
 
 export const useCalibrationStore = create<CalibrationState>((set, get) => ({
@@ -144,28 +119,4 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   keepExistingTemplate: () => set({ templateUseExisting: true, templateCaptured: false }),
 
   setLiveScore: (score) => set({ liveScore: score }),
-
-  runTest: async () => {
-    const { productId } = get()
-    if (!productId) return
-    set({ testRunning: true, testResults: null })
-    try {
-      const res = await productsApi.predictOnce(productId)
-      set({ testResults: res.results as TestResult[], testRunning: false })
-    } catch {
-      Toast.error('テスト検査に失敗しました')
-      set({ testRunning: false })
-    }
-  },
-
-  confirmTest: () => {
-    const { testPhase } = get()
-    if (testPhase === 'ng') {
-      set({ ngConfirmed: true, testPhase: 'ok', testResults: null })
-    } else if (testPhase === 'ok') {
-      set({ okConfirmed: true, testPhase: 'done' })
-    }
-  },
-
-  retryTest: () => set({ testResults: null }),
 }))

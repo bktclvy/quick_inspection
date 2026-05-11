@@ -54,13 +54,15 @@ _active_worker_id: str | None = None
 _active_worker_name: str | None = None
 _active_product_name: str | None = None
 _inspection_active = False
+_test_mode = False  # キャリブレーション中の試運転。ログ/カウンタを永続化しない
 _model_manager = None
 _state_machine = None
 
 
-async def start_inspection(product_id: str, worker_id: str, model_manager, state_machine):
+async def start_inspection(product_id: str, worker_id: str, model_manager, state_machine,
+                            test_mode: bool = False):
     global _active_product_id, _active_worker_id, _active_worker_name, _active_product_name
-    global _inspection_active, _model_manager, _state_machine
+    global _inspection_active, _test_mode, _model_manager, _state_machine
     async with _inspection_lock:
         _active_product_id = product_id
         _active_worker_id = worker_id
@@ -76,19 +78,21 @@ async def start_inspection(product_id: str, worker_id: str, model_manager, state
         except Exception:
             _active_product_name = None
         _inspection_active = True
+        _test_mode = test_mode
         _model_manager = model_manager
         _state_machine = state_machine
 
 
 async def stop_inspection():
     global _active_product_id, _active_worker_id, _active_worker_name, _active_product_name
-    global _inspection_active
+    global _inspection_active, _test_mode
     async with _inspection_lock:
         _active_product_id = None
         _active_worker_id = None
         _active_worker_name = None
         _active_product_name = None
         _inspection_active = False
+        _test_mode = False
         camera.unfreeze_frame()
 
 
@@ -102,7 +106,11 @@ def get_inspection_status() -> dict:
 
 def _record_state_events(result: dict) -> None:
     """state_machine の result dict に含まれる _event / _box_event を SQLite に記録する。
-    検査本体を止めないよう例外は飲み込む。"""
+    検査本体を止めないよう例外は飲み込む。test_mode 中は破棄するだけで記録しない。"""
+    if _test_mode:
+        result.pop("_event", None)
+        result.pop("_box_event", None)
+        return
     try:
         ev = result.pop("_event", None)
         if ev:
@@ -252,7 +260,7 @@ async def inspection_stream(websocket: WebSocket):
                     result = _state_machine.confirm()
                     _record_state_events(result)
                     # 箱ログ書き込み（秤モード時のみ box_result が送られてくる）
-                    if box_result and _active_product_id:
+                    if box_result and _active_product_id and not _test_mode:
                         await loop.run_in_executor(
                             None, append_box_log, _active_product_id, box_result)
                     camera.unfreeze_frame()
@@ -270,7 +278,7 @@ async def inspection_stream(websocket: WebSocket):
                 result = _state_machine.manual_trigger(roi_results)
                 camera.freeze_frame(frame)
                 # ログ保存
-                if result.get("state") == "judged":
+                if result.get("state") == "judged" and not _test_mode:
                     await loop.run_in_executor(
                         None, product_manager.save_inspection_log,
                         _active_product_id, frame, result)
@@ -327,9 +335,10 @@ async def inspection_stream(websocket: WebSocket):
 
                 if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
                     camera.freeze_frame(frame)
-                    await loop.run_in_executor(
-                        None, product_manager.save_inspection_log,
-                        _active_product_id, frame, result)
+                    if not _test_mode:
+                        await loop.run_in_executor(
+                            None, product_manager.save_inspection_log,
+                            _active_product_id, frame, result)
                 if result.get("state") == "idle" and prev_state != InspectionState.IDLE:
                     camera.unfreeze_frame()
 
@@ -395,7 +404,7 @@ async def inspection_stream(websocket: WebSocket):
                     match_scores, bg_match, frame_diff, roi_results)
 
             # JUDGED遷移時に検査ログ保存
-            if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
+            if result.get("state") == "judged" and prev_state != InspectionState.JUDGED and not _test_mode:
                 await loop.run_in_executor(
                     None, product_manager.save_inspection_log,
                     _active_product_id, frame, result)

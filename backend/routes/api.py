@@ -847,6 +847,7 @@ async def training_status():
 class InspectionStart(BaseModel):
     product_id: str
     worker_id: str | None = None
+    test_mode: bool = False  # キャリブレーション中の試運転。永続化を行わない
 
 
 @router.post("/inspection/start")
@@ -866,9 +867,10 @@ async def start_inspection(data: InspectionStart):
             raise HTTPException(400, "指定された作業者が見つかりません")
 
     # この製品の設定でステートマシンを初期化
+    # test_mode 時はカウンタファイルを渡さず、永続化を抑止する
     state_machine.setup_product(
         p.inspection_config,
-        product_manager.counter_file(data.product_id),
+        None if data.test_mode else product_manager.counter_file(data.product_id),
     )
 
     # カメラ設定を適用
@@ -893,8 +895,10 @@ async def start_inspection(data: InspectionStart):
             if os.path.exists(model_path):
                 model_manager.load(roi.model_name, model_path, meta_path)
 
-    await ws_start(data.product_id, data.worker_id, model_manager, state_machine)
-    return {"active": True, "product_id": data.product_id, "worker_id": data.worker_id}
+    await ws_start(data.product_id, data.worker_id, model_manager, state_machine,
+                   test_mode=data.test_mode)
+    return {"active": True, "product_id": data.product_id, "worker_id": data.worker_id,
+            "test_mode": data.test_mode}
 
 
 @router.post("/inspection/stop")

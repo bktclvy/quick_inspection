@@ -39,7 +39,7 @@ interface InspectionStoreState {
   remainingMs: number
 
   /* actions */
-  startInspection: (productId: string, workerId?: string | null) => Promise<void>
+  startInspection: (productId: string, workerId?: string | null, testMode?: boolean) => Promise<void>
   stopInspection: () => Promise<void>
   handleStateUpdate: (data: InspectionStateUpdate) => void
   loadCounters: (productId: string) => Promise<void>
@@ -74,17 +74,20 @@ export const useInspectionStore = create<InspectionStoreState>((set, get) => ({
   triggerRequired: 3,
   remainingMs: 0,
 
-  startInspection: async (productId, workerId = null) => {
+  startInspection: async (productId, workerId = null, testMode = false) => {
     set({ starting: true })
     try {
-      await inspectionApi.start(productId, workerId ?? null)
+      await inspectionApi.start(productId, workerId ?? null, testMode)
       // packingConfig を取得して boxWorkflow を初期化
-      let packingConfig = null
-      try {
-        const product = await productsApi.get(productId)
-        packingConfig = product?.inspection_config?.packing ?? null
-      } catch { /* 取得失敗時は packing なしで続行 */ }
-      useBoxWorkflowStore.getState().init(productId, packingConfig)
+      // テストモードでは箱ワークフローは動かさない（永続化されず、UIも別）
+      if (!testMode) {
+        let packingConfig = null
+        try {
+          const product = await productsApi.get(productId)
+          packingConfig = product?.inspection_config?.packing ?? null
+        } catch { /* 取得失敗時は packing なしで続行 */ }
+        useBoxWorkflowStore.getState().init(productId, packingConfig)
+      }
       set({ inspecting: true, inspectionProductId: productId, history: [], starting: false })
     } catch {
       set({ starting: false })

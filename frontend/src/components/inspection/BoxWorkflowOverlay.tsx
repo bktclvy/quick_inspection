@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useBoxWorkflowStore } from '@/stores/boxWorkflowStore'
 import { useScaleStore } from '@/stores/scaleStore'
@@ -7,8 +7,7 @@ import { useAudioFeedback } from '@/hooks/useAudioFeedback'
 import { scaleApi } from '@/api/scale'
 
 export function BoxWorkflowOverlay() {
-  const phase  = useBoxWorkflowStore((s) => s.phase)
-
+  const phase = useBoxWorkflowStore((s) => s.phase)
   const visible = phase !== 'off' && phase !== 'inspecting'
   if (!visible) return null
 
@@ -24,6 +23,7 @@ export function BoxWorkflowOverlay() {
       <style>{`
         @keyframes calibPop { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
         @keyframes spin { to { transform:rotate(360deg); } }
+        @keyframes resultFlash { 0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); } 100% { box-shadow: 0 0 0 24px rgba(16,185,129,0); } }
       `}</style>
     </div>,
     document.body
@@ -34,20 +34,23 @@ function OverlayContent() {
   const phase         = useBoxWorkflowStore((s) => s.phase)
   const packingConfig = useBoxWorkflowStore((s) => s.packingConfig)
   const currentBoxQty = useBoxWorkflowStore((s) => s.currentBoxQty)
-  const weighResult   = useBoxWorkflowStore((s) => s.weighResult)
+  const snapshot      = useBoxWorkflowStore((s) => s.snapshot)
   const error         = useBoxWorkflowStore((s) => s.error)
-  const { onTareOk, onTareError, startMeasuring, onWeighOk, onWeighNg,
-          toTareNextBox } = useBoxWorkflowStore()
+  const setVerifyOk = useBoxWorkflowStore((s) => s.setVerifyOk)
+  const onTareOk      = useBoxWorkflowStore((s) => s.onTareOk)
+  const onTareError   = useBoxWorkflowStore((s) => s.onTareError)
+  const toTareNextBox = useBoxWorkflowStore((s) => s.toTareNextBox)
 
   const scaleValue  = useScaleStore((s) => s.value_g)
   const scaleStable = useScaleStore((s) => s.stable)
   const scalePort   = useScaleStore((s) => s.portOpen)
   const scaleLive   = useScaleStore((s) => s.live)
 
-  const { send }  = useInspectionWS()
-  const { play }  = useAudioFeedback()
+  const { send } = useInspectionWS()
+  const { play } = useAudioFeedback()
   const [taring, setTaring] = useState(false)
 
+  // 風袋引き (initial / next box)
   const handleTare = useCallback(async () => {
     if (taring) return
     setTaring(true)
@@ -57,7 +60,7 @@ function OverlayContent() {
         play('tare_ok')
         onTareOk()
       } else {
-        onTareError('風袋リセットが完了しませんでした。もう一度お試しください。')
+        onTareError('風袋引きが完了しませんでした。空箱を載せた状態でもう一度押してください。')
       }
     } catch {
       onTareError('秤との通信に失敗しました。')
@@ -66,48 +69,79 @@ function OverlayContent() {
     }
   }, [taring, onTareOk, onTareError, play])
 
-  const handleWeigh = useCallback(async () => {
-    if (!packingConfig) return
-    if (!currentBoxQty || currentBoxQty <= 0) return  // box_qty が無いと期待重量が計算できない
-    startMeasuring()
-    const expectedG = packingConfig.unit_weight_g * currentBoxQty
+  // result_ok での「箱完了 → 風袋」: confirm + box_result 送信 → tare API
+  const handleConfirmAndTare = useCallback(async () => {
+    if (taring) return
+    if (!snapshot) return
+    setTaring(true)
     try {
-      const result = await scaleApi.weigh({
-        expected_g: expectedG,
-        tolerance_g: packingConfig.tolerance_g,
-        box_qty: currentBoxQty || undefined,
+      send({
+        action: 'confirm',
+        box_result: {
+          box_id: `box_${Date.now()}`,
+          completed_at: new Date().toISOString(),
+          status: 'OK',
+          final_weight_g: snapshot.measuredG,
+          expected_weight_g: snapshot.expectedG,
+          box_qty: currentBoxQty,
+          tolerance_g: packingConfig?.tolerance_g ?? 0,
+        },
       })
-      const local = { ...result, expected_g: expectedG, tolerance_g: packingConfig.tolerance_g }
-      if (result.ok) {
-        play('box_ok')
-        onWeighOk(local)
+      toTareNextBox()
+      const r = await scaleApi.tare()
+      if (r.ok) {
+        play('tare_ok')
+        onTareOk()
       } else {
-        play('box_ng')
-        onWeighNg(local)
+        onTareError('風袋引きが完了しませんでした。空箱を載せた状態でもう一度押してください。')
       }
     } catch {
-      onWeighNg({ ok: false, measured_g: 0, deviation_g: 0, estimated_qty_delta: null, expected_g: expectedG, tolerance_g: packingConfig.tolerance_g })
+      onTareError('秤との通信に失敗しました。')
+    } finally {
+      setTaring(false)
     }
-  }, [packingConfig, currentBoxQty, startMeasuring, onWeighOk, onWeighNg, play])
+  }, [taring, snapshot, currentBoxQty, packingConfig, send, toTareNextBox, onTareOk, onTareError, play])
 
-  // 員数 OK → confirm 送信 + box_log 書込 + 次の箱の風袋準備へ
-  const handleConfirmOk = useCallback(() => {
-    if (!weighResult) return
-    const now = new Date().toISOString()
-    send({
-      action: 'confirm',
-      box_result: {
-        box_id: `box_${Date.now()}`,
-        completed_at: now,
-        status: 'OK',
-        final_weight_g: weighResult.measured_g,
-        expected_weight_g: weighResult.expected_g,
-        box_qty: currentBoxQty,
-        tolerance_g: weighResult.tolerance_g,
-      },
-    })
-    toTareNextBox()
-  }, [weighResult, currentBoxQty, send, toTareNextBox])
+  // ── 秤一致の自動検知 ──────────────────────────────────────
+  // verifying 中、秤が「同じ値で 1.5 秒以上 ST 継続」かつカメラ個数と一致した
+  // 瞬間に result_ok へ。 一致しなければ何も起こらない（NG は明示しない）。
+  // 1.5 秒のウィンドウは、達成瞬間に作業者の手に部品が残っているケースで誤検知しないため。
+  const lastVerifiedRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase !== 'verifying') return
+    if (!scaleLive || !scaleStable) return
+    if (scaleValue == null) return
+    if (!packingConfig || !packingConfig.unit_weight_g || packingConfig.unit_weight_g <= 0) return
+    if (currentBoxQty <= 0) return
+
+    const last = lastVerifiedRef.current
+    if (last !== null && Math.abs(last - scaleValue) < 0.1) return
+
+    const timer = setTimeout(() => {
+      const estimateFloat = scaleValue / packingConfig.unit_weight_g
+      const scaleCount = Math.round(estimateFloat)
+      const cameraCount = currentBoxQty
+      lastVerifiedRef.current = scaleValue
+      if (scaleCount !== cameraCount) return  // 不一致は無視。verifying のまま待ち続ける
+      setVerifyOk({
+        cameraCount,
+        scaleCount,
+        scaleEstimate: estimateFloat,
+        measuredG: scaleValue,
+        expectedG: packingConfig.unit_weight_g * cameraCount,
+      })
+      play('box_ok')
+    }, 1500)
+
+    return () => clearTimeout(timer)
+  }, [phase, scaleLive, scaleStable, scaleValue, packingConfig, currentBoxQty, setVerifyOk, play])
+
+  // verifying 突入時に判定履歴をクリア（前の箱の値を引き継がない）
+  useEffect(() => {
+    if (phase === 'verifying') {
+      lastVerifiedRef.current = null
+    }
+  }, [phase])
 
   return (
     <div style={{
@@ -118,7 +152,6 @@ function OverlayContent() {
       overflow: 'hidden',
       animation: 'calibPop 0.25s ease',
     }}>
-      {/* ── Tare Phase ── */}
       {phase === 'tare' && (
         <TarePanel
           scaleValue={scaleValue}
@@ -131,61 +164,39 @@ function OverlayContent() {
         />
       )}
 
-      {/* ── Weighing CTA ── */}
-      {phase === 'weighing' && (
-        <WeighingPanel
-          boxQty={currentBoxQty}
+      {phase === 'verifying' && (
+        <VerifyingPanel
+          cameraCount={currentBoxQty}
           scaleValue={scaleValue}
           scaleStable={scaleStable}
           scaleLive={scaleLive}
-          onWeigh={handleWeigh}
+          unitWeight={packingConfig?.unit_weight_g ?? 0}
         />
       )}
 
-      {/* ── Measuring spinner ── */}
-      {phase === 'weighing_measuring' && (
-        <MeasuringPanel scaleValue={scaleValue} scaleStable={scaleStable} scaleLive={scaleLive} />
+      {phase === 'result_ok' && snapshot && (
+        <ResultOkPanel
+          snapshot={snapshot}
+          scaleValue={scaleValue}
+          scaleStable={scaleStable}
+          scaleLive={scaleLive}
+          taring={taring}
+          error={error}
+          onConfirmAndTare={handleConfirmAndTare}
+        />
       )}
 
-      {/* ── Weigh OK ── */}
-      {phase === 'weigh_ok' && weighResult && (
-        <WeighOkPanel result={weighResult} boxQty={currentBoxQty} onNext={handleConfirmOk} />
-      )}
-
-      {/* ── Weigh NG ── */}
-      {phase === 'weigh_ng' && weighResult && (
-        <WeighNgPanel result={weighResult} boxQty={currentBoxQty} onRetry={handleWeigh} />
-      )}
     </div>
   )
 }
 
-/* ── Sub-panels ──────────────────────────────────────── */
+/* ────── Sub-panels ────────────────────────────────────────────── */
 
-function ScaleReadout({ value, stable, live }: { value: number | null; stable: boolean; live: boolean }) {
-  const color = !live ? '#b0a9bc' : stable ? '#059669' : '#d97706'
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'baseline', gap: 6, justifyContent: 'center',
-      padding: '12px 0',
-    }}>
-      <span style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 36, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums',
-      }}>
-        {!live ? '---' : value != null ? value.toFixed(1) : '---'}
-      </span>
-      <span style={{ fontSize: 16, color, fontWeight: 600 }}>g</span>
-      <span style={{
-        fontSize: 12, fontWeight: 600, color, opacity: 0.75, marginLeft: 6,
-      }}>
-        {!live ? '受信待ち' : stable ? '安定' : '測定中'}
-      </span>
-    </div>
-  )
-}
-
-function PanelHeader({ emoji, title, subtitle }: { emoji: string; title: string; subtitle?: string }) {
+function PanelHeader({ emoji, title, subtitle, tone }: {
+  emoji: string; title: string; subtitle?: string
+  tone?: 'neutral' | 'ok' | 'ng'
+}) {
+  const titleColor = tone === 'ok' ? '#047857' : tone === 'ng' ? '#b91c1c' : '#1a1625'
   return (
     <div style={{
       padding: '28px 32px 20px',
@@ -193,10 +204,72 @@ function PanelHeader({ emoji, title, subtitle }: { emoji: string; title: string;
       textAlign: 'center',
     }}>
       <div style={{ fontSize: 32, marginBottom: 8 }}>{emoji}</div>
-      <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1a1625', margin: 0 }}>{title}</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 800, color: titleColor, margin: 0 }}>{title}</h2>
       {subtitle && (
         <p style={{ fontSize: 14, color: '#7c7494', marginTop: 6, marginBottom: 0 }}>{subtitle}</p>
       )}
+    </div>
+  )
+}
+
+// 秤の小さなライブインジケータ。 グラム値は補助情報として小さく出す
+function ScaleStatusBadge({ value, stable, live }: {
+  value: number | null; stable: boolean; live: boolean
+}) {
+  let dotColor = '#b0a9bc'
+  let label = '受信待ち'
+  if (live && stable) { dotColor = '#10b981'; label = '安定' }
+  else if (live && !stable) { dotColor = '#f59e0b'; label = '測定中' }
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8,
+      padding: '6px 12px', borderRadius: 999,
+      background: '#fff', border: '1px solid #ebe7e2',
+      fontSize: 12, color: '#5c5470', fontWeight: 600,
+    }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: 4, background: dotColor,
+        boxShadow: live && stable ? '0 0 0 3px rgba(16,185,129,0.15)' : 'none',
+      }} />
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontVariantNumeric: 'tabular-nums' }}>
+        {live && value != null ? `${value.toFixed(1)} g` : '---'}
+      </span>
+      <span style={{ opacity: 0.6 }}>· {label}</span>
+    </div>
+  )
+}
+
+function CountBox({ label, value, tone, dimmed }: {
+  label: string
+  value: number | null
+  tone: 'neutral' | 'ok' | 'ng'
+  dimmed?: boolean  // 値変動中 (確定値ではない) の控えめ表示
+}) {
+  const palette = tone === 'ok'
+    ? { bg: '#f0fdf4', border: '#86efac', text: '#047857', subText: '#059669' }
+    : tone === 'ng'
+      ? { bg: '#fef2f2', border: '#fca5a5', text: '#b91c1c', subText: '#dc2626' }
+      : { bg: '#fafaf9', border: '#ebe7e2', text: '#1a1625', subText: '#7c7494' }
+  return (
+    <div style={{
+      flex: 1, textAlign: 'center', padding: '14px 12px',
+      background: palette.bg, border: `1.5px solid ${palette.border}`,
+      borderRadius: 12,
+      opacity: dimmed ? 0.65 : 1,
+      transition: 'opacity 0.2s ease',
+    }}>
+      <p style={{
+        margin: 0, fontSize: 11, fontWeight: 700,
+        color: palette.subText, letterSpacing: '0.08em',
+      }}>{label}</p>
+      <p style={{
+        margin: '4px 0 0', fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 32, fontWeight: 800, color: palette.text,
+        fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
+      }}>
+        {value !== null ? value : '—'}
+        <span style={{ fontSize: 14, fontWeight: 600, marginLeft: 2 }}>個</span>
+      </p>
     </div>
   )
 }
@@ -208,14 +281,11 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
   const canTare = scaleLive && !taring
   return (
     <>
-      <PanelHeader emoji="⚖" title="秤の準備" subtitle="空の箱を秤に載せて、風袋リセットを行ってください" />
+      <PanelHeader emoji="⚖" title="秤の準備" subtitle="空箱を秤に載せて、風袋引きを押してください" />
       <div style={{ padding: '20px 32px 28px' }}>
-        <ol style={{ margin: '0 0 16px', padding: '0 0 0 20px', color: '#5c5470', fontSize: 14, lineHeight: 2 }}>
-          <li>空の箱を秤に載せてください</li>
-          <li>下のボタンで風袋リセットを行ってください</li>
-        </ol>
-
-        <ScaleReadout value={scaleValue} stable={scaleStable} live={scaleLive} />
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <ScaleStatusBadge value={scaleValue} stable={scaleStable} live={scaleLive} />
+        </div>
 
         {error && (
           <p style={{ fontSize: 13, color: '#dc2626', textAlign: 'center', marginBottom: 12 }}>{error}</p>
@@ -234,7 +304,7 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
             transition: 'all 0.2s ease',
           }}
         >
-          {taring ? '風袋リセット中…' : '風袋リセット'}
+          {taring ? '風袋引き中…' : '風袋引き'}
         </button>
         {!scaleLive && (
           <p style={{ fontSize: 12, color: scalePort ? '#c2410c' : '#dc2626', textAlign: 'center', marginTop: 10 }}>
@@ -246,42 +316,47 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
   )
 }
 
-function WeighingPanel({ boxQty, scaleValue, scaleStable, scaleLive, onWeigh }: {
-  boxQty: number; scaleValue: number | null; scaleStable: boolean; scaleLive: boolean; onWeigh: () => void
+function VerifyingPanel({ cameraCount, scaleValue, scaleStable, scaleLive, unitWeight }: {
+  cameraCount: number
+  scaleValue: number | null
+  scaleStable: boolean
+  scaleLive: boolean
+  unitWeight: number
 }) {
-  const canWeigh = scaleLive
+  // 秤の現在の個数 (live)。 値が無いか単重未設定なら null
+  const liveScaleCount = scaleLive && scaleValue != null && unitWeight > 0
+    ? Math.round(scaleValue / unitWeight)
+    : null
+  const status = !scaleLive
+    ? '秤の応答を待っています…'
+    : !scaleStable
+      ? '秤を確認中… (測定中)'
+      : '秤を確認中…'
   return (
     <>
-      <PanelHeader
-        emoji="📦"
-        title={`${boxQty} 個完成`}
-        subtitle="重量で員数を確認します"
-      />
-      <div style={{ padding: '20px 32px 28px', textAlign: 'center' }}>
-        <p style={{ fontSize: 14, color: '#5c5470', marginBottom: 4 }}>
-          現在の秤
+      <PanelHeader emoji="📦" title={`${cameraCount} 個 完成`} subtitle="秤で確認します" />
+      <div style={{ padding: '20px 32px 28px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <CountBox label="カメラ" value={cameraCount} tone="ok" />
+          <span style={{
+            fontSize: 22, fontWeight: 700, color: '#b0a9bc',
+            fontFamily: "'JetBrains Mono', monospace", flexShrink: 0,
+          }}>⋯</span>
+          <CountBox label="秤" value={liveScaleCount} tone="neutral" dimmed={!scaleStable} />
+        </div>
+        <p style={{
+          textAlign: 'center', fontSize: 13, color: '#7c7494',
+          margin: 0, fontWeight: 600,
+        }}>
+          {status}
         </p>
-        <ScaleReadout value={scaleValue} stable={scaleStable} live={scaleLive} />
-        <p style={{ fontSize: 13, color: '#9994a8', marginBottom: 20 }}>
-          箱を秤の上に置いた状態で「計量する」を押してください
-        </p>
-        <button
-          onClick={onWeigh}
-          disabled={!canWeigh}
-          style={{
-            width: '100%', height: 52,
-            fontSize: 16, fontWeight: 700, fontFamily: 'inherit',
-            border: 'none', borderRadius: 14, cursor: canWeigh ? 'pointer' : 'default',
-            background: canWeigh ? 'linear-gradient(135deg, #6366f1, #7c3aed)' : '#e8e4df',
-            color: canWeigh ? '#fff' : '#b0a9bc',
-            boxShadow: canWeigh ? '0 4px 16px rgba(99,102,241,0.35)' : 'none',
-          }}
-        >
-          計量する
-        </button>
-        {!canWeigh && (
-          <p style={{ fontSize: 12, color: '#dc2626', marginTop: 10 }}>
-            秤からデータが届いていません。接続を確認してください。
+        {scaleLive && scaleValue != null && (
+          <p style={{
+            textAlign: 'center', fontSize: 11, color: '#9994a8',
+            margin: '4px 0 0', fontFamily: "'JetBrains Mono', monospace",
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {scaleValue.toFixed(1)} g
           </p>
         )}
       </div>
@@ -289,144 +364,80 @@ function WeighingPanel({ boxQty, scaleValue, scaleStable, scaleLive, onWeigh }: 
   )
 }
 
-function MeasuringPanel({ scaleValue, scaleStable, scaleLive }: { scaleValue: number | null; scaleStable: boolean; scaleLive: boolean }) {
-  return (
-    <>
-      <PanelHeader emoji="⏳" title="員数チェック中…" subtitle="秤が安定するまでお待ちください" />
-      <div style={{ padding: '20px 32px 28px', textAlign: 'center' }}>
-        <ScaleReadout value={scaleValue} stable={scaleStable} live={scaleLive} />
-        <div style={{
-          width: 40, height: 40, margin: '8px auto 0',
-          borderRadius: '50%',
-          border: '3px solid #e8e4df',
-          borderTopColor: '#6366f1',
-          animation: 'spin 0.8s linear infinite',
-        }} />
-      </div>
-    </>
-  )
-}
-
-function WeighOkPanel({ result, boxQty, onNext }: {
-  result: { measured_g: number; expected_g: number; deviation_g: number; estimated_qty_delta: number | null }
-  boxQty: number; onNext: () => void
+function ResultOkPanel({ snapshot, scaleValue, scaleStable, scaleLive, taring, error, onConfirmAndTare }: {
+  snapshot: { cameraCount: number; scaleCount: number; measuredG: number; expectedG: number }
+  scaleValue: number | null; scaleStable: boolean; scaleLive: boolean
+  taring: boolean; error: string | null
+  onConfirmAndTare: () => void
 }) {
+  // 風袋引きは作業者の責任で押す (重量ガードは誤判定が多く外す)
+  const canTare = scaleLive && scaleStable && !taring
+  const reason = !scaleLive ? '秤が応答していません'
+    : !scaleStable ? '秤が安定するのを待っています'
+    : null
   return (
     <>
-      <PanelHeader emoji="✓" title="員数 OK" />
+      <PanelHeader emoji="✓" title="員数 OK" tone="ok" />
       <div style={{ padding: '20px 32px 28px' }}>
-        {/* 個数主役 */}
+        {/* B vs C の対応を見せる: カメラ N 個 = 秤 N 個 */}
         <div style={{
-          background: '#f0fdf4', borderRadius: 14, padding: '24px 20px', marginBottom: 14,
-          border: '1.5px solid #86efac', textAlign: 'center',
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8,
+          animation: 'resultFlash 0.8s ease-out',
+          borderRadius: 12,
         }}>
-          <p style={{ fontSize: 12, fontWeight: 700, color: '#059669', letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>
-            合格
-          </p>
-          <p style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 44, fontWeight: 800, color: '#047857',
-            lineHeight: 1, margin: 0,
-            fontVariantNumeric: 'tabular-nums',
-          }}>
-            {boxQty} 個
-          </p>
-          <p style={{ fontSize: 13, color: '#059669', marginTop: 6, marginBottom: 0 }}>
-            期待 {boxQty} 個と一致
-          </p>
+          <CountBox label="カメラ" value={snapshot.cameraCount} tone="ok" />
+          <span style={{
+            fontSize: 24, fontWeight: 800, color: '#10b981',
+            fontFamily: "'JetBrains Mono', monospace", flexShrink: 0,
+          }}>=</span>
+          <CountBox label="秤" value={snapshot.scaleCount} tone="ok" />
         </div>
-        {/* グラム補助 */}
+        <p style={{
+          textAlign: 'center', fontSize: 12, color: '#059669', fontWeight: 600,
+          marginTop: 0, marginBottom: 20,
+        }}>
+          2系統で個数が一致しました
+        </p>
+
+        {/* 次の箱へ向けた案内 */}
         <div style={{
-          background: '#fafaf9', borderRadius: 10, padding: '10px 14px', marginBottom: 18,
+          background: '#fff', borderRadius: 12, padding: '14px 16px', marginBottom: 14,
           border: '1px solid #ebe7e2',
-          display: 'flex', justifyContent: 'space-around',
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: 12, color: '#7c7494',
-          fontVariantNumeric: 'tabular-nums',
         }}>
-          <span>実測 {result.measured_g.toFixed(1)} g</span>
-          <span>期待 {result.expected_g.toFixed(1)} g</span>
-          <span>差 {result.deviation_g >= 0 ? '+' : ''}{result.deviation_g.toFixed(1)} g</span>
+          <p style={{ margin: 0, fontSize: 13, color: '#5c5470', textAlign: 'center' }}>
+            満箱を下ろして、空箱を載せ替えてください
+          </p>
+          <div style={{ textAlign: 'center', marginTop: 10 }}>
+            <ScaleStatusBadge value={scaleValue} stable={scaleStable} live={scaleLive} />
+          </div>
         </div>
+
+        {error && (
+          <p style={{ fontSize: 13, color: '#dc2626', textAlign: 'center', marginBottom: 12 }}>{error}</p>
+        )}
+
         <button
-          onClick={onNext}
+          onClick={onConfirmAndTare}
+          disabled={!canTare}
           style={{
             width: '100%', height: 52,
             fontSize: 16, fontWeight: 700, fontFamily: 'inherit',
-            border: 'none', borderRadius: 14, cursor: 'pointer',
-            background: 'linear-gradient(135deg, #059669, #047857)',
-            color: '#fff',
-            boxShadow: '0 4px 16px rgba(5,150,105,0.35)',
+            border: 'none', borderRadius: 14, cursor: canTare ? 'pointer' : 'default',
+            background: canTare ? 'linear-gradient(135deg, #059669, #047857)' : '#e8e4df',
+            color: canTare ? '#fff' : '#b0a9bc',
+            boxShadow: canTare ? '0 4px 16px rgba(5,150,105,0.35)' : 'none',
           }}
         >
-          次の箱へ
+          {taring ? '風袋引き中…' : '風袋引き'}
         </button>
-      </div>
-    </>
-  )
-}
-
-function WeighNgPanel({ result, boxQty, onRetry }: {
-  result: { measured_g: number; expected_g: number; deviation_g: number; estimated_qty_delta: number | null }
-  boxQty: number; onRetry: () => void
-}) {
-  const delta = result.estimated_qty_delta
-  // 推定実個数 = box_qty + delta (delta が正なら多い、負なら少ない)
-  const estimatedQty = delta != null ? boxQty + delta : null
-  const diffText = delta == null ? null
-    : delta > 0 ? `${Math.abs(delta).toFixed(1)} 個多い`
-    : delta < 0 ? `${Math.abs(delta).toFixed(1)} 個不足`
-    : '誤差範囲外'
-  return (
-    <>
-      <PanelHeader emoji="⚠" title="員数不一致" subtitle="中身を確認してから再計量してください" />
-      <div style={{ padding: '20px 32px 28px' }}>
-        {/* 個数主役 */}
-        <div style={{
-          background: '#fef2f2', borderRadius: 14, padding: '24px 20px', marginBottom: 14,
-          border: '1.5px solid #fca5a5', textAlign: 'center',
-        }}>
-          <p style={{ fontSize: 12, fontWeight: 700, color: '#dc2626', letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>
-            推定 個数
-          </p>
+        {!canTare && !taring && reason && (
           <p style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 44, fontWeight: 800, color: '#b91c1c',
-            lineHeight: 1, margin: 0,
-            fontVariantNumeric: 'tabular-nums',
+            fontSize: 12, color: '#c2410c', textAlign: 'center',
+            marginTop: 10, marginBottom: 0, fontWeight: 600,
           }}>
-            {estimatedQty != null ? `約 ${estimatedQty.toFixed(1)} 個` : '計算不能'}
+            {reason}
           </p>
-          <p style={{ fontSize: 13, color: '#dc2626', marginTop: 6, marginBottom: 0 }}>
-            期待 {boxQty} 個{diffText ? ` — ${diffText}` : ''}
-          </p>
-        </div>
-        {/* グラム補助 */}
-        <div style={{
-          background: '#fafaf9', borderRadius: 10, padding: '10px 14px', marginBottom: 18,
-          border: '1px solid #ebe7e2',
-          display: 'flex', justifyContent: 'space-around',
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: 12, color: '#7c7494',
-          fontVariantNumeric: 'tabular-nums',
-        }}>
-          <span>実測 {result.measured_g.toFixed(1)} g</span>
-          <span>期待 {result.expected_g.toFixed(1)} g</span>
-          <span>差 {result.deviation_g >= 0 ? '+' : ''}{result.deviation_g.toFixed(1)} g</span>
-        </div>
-        <button
-          onClick={onRetry}
-          style={{
-            width: '100%', height: 52,
-            fontSize: 16, fontWeight: 700, fontFamily: 'inherit',
-            border: 'none', borderRadius: 14, cursor: 'pointer',
-            background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
-            color: '#fff',
-            boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
-          }}
-        >
-          もう一度計量する
-        </button>
+        )}
       </div>
     </>
   )

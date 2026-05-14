@@ -137,7 +137,7 @@ export function InspectPage() {
         {/* ── Flow Indicator ── */}
         <FlowIndicator state={state} />
 
-        {/* ── 箱進捗 (B カメラ派生 + C 秤実測) ── */}
+        {/* ── 箱進捗 + 秤 + 風袋引き (1枚に統合) ── */}
         <BoxProgressCard counters={counters} packing={selectedProduct?.inspection_config?.packing} />
 
         {/* ── Counters (検査回数累計) ── */}
@@ -148,7 +148,8 @@ export function InspectPage() {
         <div style={{
           borderRadius: 20, padding: '24px', textAlign: 'center',
           position: 'relative', overflow: 'hidden',
-          height: 200, display: 'flex', flexDirection: 'column',
+          height: 200, flexShrink: 0,
+          display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
           transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
           ...(vs === 'idle' ? {
@@ -296,66 +297,6 @@ export function InspectPage() {
           </div>
         )}
 
-        {/* ── ROI Results (always visible) ── */}
-        {rois.length > 0 && (
-          <Panel title="ROI">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {rois.map((roi) => {
-                const result = hasResults ? roiResults.find((r) => r.roi_id === roi.id) : null
-                const isOk = result ? result.judgment.toLowerCase() === 'ok' : null
-
-                return (
-                  <div key={roi.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 14px', borderRadius: 10,
-                    transition: 'all 0.2s ease',
-                    ...(isOk === true ? {
-                      background: '#ecfdf5', border: '2px solid #10b981',
-                    } : isOk === false ? {
-                      background: '#fef2f2', border: '2px solid #ef4444',
-                    } : {
-                      background: '#faf9f7', border: '2px solid transparent',
-                    }),
-                  }}>
-                    {/* Color dot */}
-                    <div style={{
-                      width: 10, height: 10, borderRadius: 5, flexShrink: 0,
-                      background: isOk === true ? '#10b981' : isOk === false ? '#ef4444' : (roi.color || '#6366f1'),
-                      boxShadow: isOk !== null ? `0 0 0 3px ${isOk ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}` : 'none',
-                    }} />
-                    <span style={{
-                      flex: 1, fontSize: 13, fontWeight: 600,
-                      color: isOk === true ? '#065f46' : isOk === false ? '#991b1b' : '#1a1625',
-                    }}>
-                      {roi.name}
-                    </span>
-                    {result && (
-                      <>
-                        <span style={{
-                          fontSize: 11, fontWeight: 800,
-                          fontFamily: "'JetBrains Mono', monospace",
-                          padding: '2px 8px', borderRadius: 6,
-                          color: '#fff',
-                          background: isOk ? '#10b981' : '#ef4444',
-                        }}>
-                          {isOk ? 'OK' : 'NG'}
-                        </span>
-                        <span style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                          color: isOk ? '#059669' : '#dc2626',
-                        }}>
-                          {(result.confidence * 100).toFixed(1)}%
-                        </span>
-                      </>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </Panel>
-        )}
-
       </div>
 
       {/* keyframes are in layout.css */}
@@ -367,25 +308,6 @@ export function InspectPage() {
 }
 
 /* ── Sub-components ── */
-
-function Panel({ title, children, style }: { title: string; children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <div style={{
-      background: '#fff', borderRadius: 16, overflow: 'hidden',
-      boxShadow: '0 1px 4px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.02)',
-      display: 'flex', flexDirection: 'column',
-      ...style,
-    }}>
-      <div style={{ padding: '12px 18px', borderBottom: '1px solid #f0ede9', flexShrink: 0 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#7c7494', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-          {title}
-        </span>
-      </div>
-      <div style={{ padding: '12px 18px', flex: 1, minHeight: 0 }}>{children}</div>
-    </div>
-  )
-}
-
 
 /* ── Helpers ── */
 
@@ -460,6 +382,7 @@ function FlowIndicator({ state }: { state: InspectionState }) {
       display: 'flex', alignItems: 'center',
       background: '#fff', borderRadius: 14, padding: '12px 20px',
       boxShadow: '0 1px 4px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.02)',
+      flexShrink: 0,
     }}>
       {FLOW_STEPS.map((step, i) => {
         const isDone = completed.has(i)
@@ -545,6 +468,7 @@ function CounterPanel({ counters, productId, resetCounters }: {
     <div style={{
       background: '#fff', borderRadius: 16, overflow: 'hidden',
       boxShadow: '0 1px 4px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.02)',
+      flexShrink: 0,
     }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr' }}>
         {items.map((item, i) => (

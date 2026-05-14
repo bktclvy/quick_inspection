@@ -1,22 +1,31 @@
 import { create } from 'zustand'
 import type { PackingConfig } from '../types'
 
+/**
+ * 箱フローのフェーズ:
+ *   off        — packing 無効製品、何もしない
+ *   tare       — 初回 or 箱交換後の風袋引き待ち
+ *   inspecting — 検査進行中（モーダル非表示、BoxProgressCard でライブ進捗）
+ *   verifying  — 既定個数達成、秤がカメラ個数と一致するまで「確認中」表示
+ *                （NG は明示しない。作業者は live の秤個数を見て自身で直す）
+ *   result_ok  — カメラ実測 == 秤実測。風袋引きで次サイクルへ
+ *
+ * NG フェーズは存在しない。ユーザーアクション (「計量する」など) が無いと
+ * 明示的な NG 判定は不可能。一致するまでひたすら verifying のままにする設計。
+ */
 export type BoxPhase =
-  | 'off'                // packing not enabled for this product
-  | 'tare'               // ❶ waiting for tare reset
-  | 'inspecting'         // ❷ normal inspection in progress
-  | 'weighing'           // ❸ box complete, showing [計量する] CTA
-  | 'weighing_measuring' // ❸ calling /api/scale/weigh, waiting
-  | 'weigh_ok'           // ❸ OK result, showing [次の箱へ]
-  | 'weigh_ng'           // ❸ NG result, showing [もう一度計量する]
+  | 'off'
+  | 'tare'
+  | 'inspecting'
+  | 'verifying'
+  | 'result_ok'
 
-export interface LocalWeighResult {
-  ok: boolean
-  measured_g: number
-  deviation_g: number
-  estimated_qty_delta: number | null
-  expected_g: number
-  tolerance_g: number
+export interface VerificationSnapshot {
+  cameraCount: number   // 期待 = pieces_per_box
+  scaleCount: number    // round(scale_g / unit_weight_g)
+  scaleEstimate: number // 小数込み (NG説明用)
+  measuredG: number
+  expectedG: number
 }
 
 interface BoxWorkflowState {
@@ -24,17 +33,15 @@ interface BoxWorkflowState {
   productId: string | null
   packingConfig: PackingConfig | null
   currentBoxQty: number
-  weighResult: LocalWeighResult | null
+  snapshot: VerificationSnapshot | null
   error: string | null
 
   init: (productId: string, config: PackingConfig | null) => void
   onTareOk: () => void
   onTareError: (err: string) => void
   onBoxComplete: (qty: number) => void
-  startMeasuring: () => void
-  onWeighOk: (r: LocalWeighResult) => void
-  onWeighNg: (r: LocalWeighResult) => void
-  toTareNextBox: () => void  // 員数 OK 後、次の箱へ進むため tare に戻す
+  setVerifyOk: (snap: VerificationSnapshot) => void
+  toTareNextBox: () => void
   reset: () => void
 }
 
@@ -43,30 +50,25 @@ export const useBoxWorkflowStore = create<BoxWorkflowState>((set) => ({
   productId: null,
   packingConfig: null,
   currentBoxQty: 0,
-  weighResult: null,
+  snapshot: null,
   error: null,
 
   init: (productId, config) => {
     if (config?.enabled) {
-      set({ phase: 'tare', productId, packingConfig: config, weighResult: null, error: null, currentBoxQty: 0 })
+      set({ phase: 'tare', productId, packingConfig: config, snapshot: null, error: null, currentBoxQty: 0 })
     } else {
       set({ phase: 'off', productId, packingConfig: config })
     }
   },
 
   onTareOk: () => set({ phase: 'inspecting', error: null }),
-
   onTareError: (err) => set({ error: err }),
 
-  onBoxComplete: (qty) => set({ phase: 'weighing', currentBoxQty: qty, weighResult: null }),
+  onBoxComplete: (qty) => set({ phase: 'verifying', currentBoxQty: qty, snapshot: null, error: null }),
 
-  startMeasuring: () => set({ phase: 'weighing_measuring', error: null }),
+  setVerifyOk: (snap) => set({ phase: 'result_ok', snapshot: snap }),
 
-  onWeighOk: (r) => set({ phase: 'weigh_ok', weighResult: r }),
+  toTareNextBox: () => set({ phase: 'tare', snapshot: null, error: null, currentBoxQty: 0 }),
 
-  onWeighNg: (r) => set({ phase: 'weigh_ng', weighResult: r }),
-
-  toTareNextBox: () => set({ phase: 'tare', weighResult: null, error: null, currentBoxQty: 0 }),
-
-  reset: () => set({ phase: 'off', productId: null, packingConfig: null, weighResult: null, error: null, currentBoxQty: 0 }),
+  reset: () => set({ phase: 'off', productId: null, packingConfig: null, snapshot: null, error: null, currentBoxQty: 0 }),
 }))

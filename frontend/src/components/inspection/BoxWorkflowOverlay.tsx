@@ -4,6 +4,7 @@ import { useBoxWorkflowStore } from '@/stores/boxWorkflowStore'
 import { useScaleStore } from '@/stores/scaleStore'
 import { useInspectionWS } from '@/hooks/useInspectionWS'
 import { useAudioFeedback } from '@/hooks/useAudioFeedback'
+import { useKeyboard } from '@/hooks/useKeyboard'
 import { scaleApi } from '@/api/scale'
 
 export function BoxWorkflowOverlay() {
@@ -142,6 +143,17 @@ function OverlayContent() {
       lastVerifiedRef.current = null
     }
   }, [phase])
+
+  // Space で風袋引き (overlay 表示中のみ。inspect-page 側の Space は overlay 中は無効化されている)
+  const onSpace = useCallback(() => {
+    if (taring) return
+    if (phase === 'tare' && scaleLive) {
+      handleTare()
+    } else if (phase === 'result_ok' && scaleLive && scaleStable) {
+      handleConfirmAndTare()
+    }
+  }, [phase, taring, scaleLive, scaleStable, handleTare, handleConfirmAndTare])
+  useKeyboard('Space', onSpace, phase === 'tare' || phase === 'result_ok')
 
   return (
     <div style={{
@@ -305,6 +317,7 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
           }}
         >
           {taring ? '風袋引き中…' : '風袋引き'}
+          {canTare && !taring && <KeyHint />}
         </button>
         {!scaleLive && (
           <p style={{ fontSize: 12, color: scalePort ? '#c2410c' : '#dc2626', textAlign: 'center', marginTop: 10 }}>
@@ -313,6 +326,20 @@ function TarePanel({ scaleValue, scaleStable, scalePort, scaleLive, taring, erro
         )}
       </div>
     </>
+  )
+}
+
+// ボタン内に「Space」ヒントを小さく表示
+function KeyHint() {
+  return (
+    <span style={{
+      marginLeft: 10, padding: '2px 8px', borderRadius: 6,
+      background: 'rgba(255,255,255,0.22)',
+      fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+      verticalAlign: 'middle',
+    }}>
+      Space
+    </span>
   )
 }
 
@@ -429,6 +456,7 @@ function ResultOkPanel({ snapshot, scaleValue, scaleStable, scaleLive, taring, e
           }}
         >
           {taring ? '風袋引き中…' : '風袋引き'}
+          {canTare && !taring && <KeyHint />}
         </button>
         {!canTare && !taring && reason && (
           <p style={{

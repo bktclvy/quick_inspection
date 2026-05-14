@@ -141,15 +141,23 @@ function OverlayContent() {
     }
   }, [phase])
 
+  // result_ok で「満箱が下ろされたか」のヒューリスティック判定
+  // 厳密 0g 検知ではなく「snapshot 時の測定値から半分以上軽くなった」ことで判定する。
+  // → 空箱の重さや秤の風袋オフセット差に強い (満箱下ろし → 秤が大きく負 → 新空箱載せ → 0付近)
+  // → 半分しか取り出していない誤操作はちゃんと弾ける
+  const REMOVAL_RATIO = 0.5
+  const resultOkRemoved = snapshot != null && scaleValue != null
+    && scaleValue < snapshot.measuredG * REMOVAL_RATIO
+
   // Space で風袋引き (overlay 表示中のみ。inspect-page 側の Space は overlay 中は無効化されている)
   const onSpace = useCallback(() => {
     if (taring) return
     if (phase === 'tare' && scaleLive) {
       handleTare()
-    } else if (phase === 'result_ok' && scaleLive && scaleStable) {
+    } else if (phase === 'result_ok' && scaleLive && scaleStable && resultOkRemoved) {
       handleConfirmAndTare()
     }
-  }, [phase, taring, scaleLive, scaleStable, handleTare, handleConfirmAndTare])
+  }, [phase, taring, scaleLive, scaleStable, resultOkRemoved, handleTare, handleConfirmAndTare])
   useKeyboard('Space', onSpace, phase === 'tare' || phase === 'result_ok')
 
   return (
@@ -189,6 +197,7 @@ function OverlayContent() {
           scaleValue={scaleValue}
           scaleStable={scaleStable}
           scaleLive={scaleLive}
+          removed={resultOkRemoved}
           taring={taring}
           error={error}
           onConfirmAndTare={handleConfirmAndTare}
@@ -388,15 +397,18 @@ function VerifyingPanel({ cameraCount, scaleValue, scaleStable, scaleLive, unitW
   )
 }
 
-function ResultOkPanel({ snapshot, scaleValue, scaleStable, scaleLive, taring, error, onConfirmAndTare }: {
+function ResultOkPanel({ snapshot, scaleValue, scaleStable, scaleLive, removed, taring, error, onConfirmAndTare }: {
   snapshot: { cameraCount: number; scaleCount: number; measuredG: number; expectedG: number }
   scaleValue: number | null; scaleStable: boolean; scaleLive: boolean
+  removed: boolean   // 満箱が秤から下ろされたか (snapshot 時の半分以下に軽くなったか)
   taring: boolean; error: string | null
   onConfirmAndTare: () => void
 }) {
-  // 風袋引きは作業者の責任で押す (重量ガードは誤判定が多く外す)
-  const canTare = scaleLive && scaleStable && !taring
+  // 満箱が秤に乗ったままだとそのまま風袋引きされて次の箱の判定が狂うので、
+  // 「下ろされた (removed)」状態を必須条件にする
+  const canTare = scaleLive && scaleStable && !taring && removed
   const reason = !scaleLive ? '秤が応答していません'
+    : !removed ? '満箱を秤から取り外してください'
     : !scaleStable ? '秤が安定するのを待っています'
     : null
   return (

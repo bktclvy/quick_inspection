@@ -61,6 +61,10 @@ class CameraManager:
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             opened = self._cap.isOpened()
         if opened:
+            # 再オープンでドライバ既定値（＝オート）に戻るのを防ぐため、
+            # 保持している意図値を毎回適用する
+            self.set_autofocus(self._autofocus, self._focus_value)
+            self.set_exposure(self._auto_exposure, self._exposure_value)
             self._start_capture()
         return opened
 

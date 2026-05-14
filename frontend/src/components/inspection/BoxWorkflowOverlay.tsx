@@ -104,9 +104,10 @@ function OverlayContent() {
   }, [taring, snapshot, currentBoxQty, packingConfig, send, toTareNextBox, onTareOk, onTareError, play])
 
   // ── 秤一致の自動検知 ──────────────────────────────────────
-  // verifying 中、秤が「同じ値で 1.5 秒以上 ST 継続」かつカメラ個数と一致した
+  // verifying 中、秤が ST (HC-6Ki 本体の安定判定) かつカメラ個数と一致した
   // 瞬間に result_ok へ。 一致しなければ何も起こらない（NG は明示しない）。
-  // 1.5 秒のウィンドウは、達成瞬間に作業者の手に部品が残っているケースで誤検知しないため。
+  // ソフト側での追加ウェイトは入れない: 秤本体が ST を出した時点で
+  // 値はハードウェアレベルで既に安定している。
   const lastVerifiedRef = useRef<number | null>(null)
   useEffect(() => {
     if (phase !== 'verifying') return
@@ -118,23 +119,19 @@ function OverlayContent() {
     const last = lastVerifiedRef.current
     if (last !== null && Math.abs(last - scaleValue) < 0.1) return
 
-    const timer = setTimeout(() => {
-      const estimateFloat = scaleValue / packingConfig.unit_weight_g
-      const scaleCount = Math.round(estimateFloat)
-      const cameraCount = currentBoxQty
-      lastVerifiedRef.current = scaleValue
-      if (scaleCount !== cameraCount) return  // 不一致は無視。verifying のまま待ち続ける
-      setVerifyOk({
-        cameraCount,
-        scaleCount,
-        scaleEstimate: estimateFloat,
-        measuredG: scaleValue,
-        expectedG: packingConfig.unit_weight_g * cameraCount,
-      })
-      play('box_ok')
-    }, 1500)
-
-    return () => clearTimeout(timer)
+    const estimateFloat = scaleValue / packingConfig.unit_weight_g
+    const scaleCount = Math.round(estimateFloat)
+    const cameraCount = currentBoxQty
+    lastVerifiedRef.current = scaleValue
+    if (scaleCount !== cameraCount) return  // 不一致は無視。verifying のまま待ち続ける
+    setVerifyOk({
+      cameraCount,
+      scaleCount,
+      scaleEstimate: estimateFloat,
+      measuredG: scaleValue,
+      expectedG: packingConfig.unit_weight_g * cameraCount,
+    })
+    play('box_ok')
   }, [phase, scaleLive, scaleStable, scaleValue, packingConfig, currentBoxQty, setVerifyOk, play])
 
   // verifying 突入時に判定履歴をクリア（前の箱の値を引き継がない）

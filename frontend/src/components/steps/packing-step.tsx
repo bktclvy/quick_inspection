@@ -198,7 +198,16 @@ export function PackingStep({ productId, piecesPerBox: piecesPerBoxProp, initial
           zero_tolerance_g: zeroTolG,
         }
       } else if (!enabled) {
-        config = { enabled: false, unit_weight_g: 0, unit_weight_stddev_g: 0, sample_count: 0, tolerance_g: 0, zero_tolerance_g: zeroTolG }
+        // オフにする時も以前の重量設定は温存する。再オン時に再登録不要。
+        const prev = initialConfig
+        config = {
+          enabled: false,
+          unit_weight_g: prev?.unit_weight_g ?? 0,
+          unit_weight_stddev_g: prev?.unit_weight_stddev_g ?? 0,
+          sample_count: prev?.sample_count ?? 0,
+          tolerance_g: prev?.tolerance_g ?? 0,
+          zero_tolerance_g: zeroTolG,
+        }
       }
       await productsApi.saveConfig(productId, { packing: config ?? undefined })
       setSaved(true)

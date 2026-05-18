@@ -31,8 +31,16 @@ export interface InspectionStateUpdate {
   removal_count?: number
   removal_required?: number
 
+  // AI trigger mode (D 案)
+  present_scores?: Record<string, number> | null
+
   // perf diagnostics (debug only)
-  _timings?: { match_ms: number; infer_ms: number | null; total_ms: number }
+  _timings?: {
+    match_ms?: number
+    trigger_ms?: number | null
+    infer_ms?: number | null
+    total_ms: number
+  }
 
   // scale live value (injected by backend if scale is connected)
   scale?: {
@@ -63,6 +71,43 @@ export type TrainingMessage =
   | TrainingBatchROIError
   | TrainingBatchComplete
   | TrainingError
+  | TriggerTrainStatus
+  | TriggerTrainEpoch
+  | TriggerTrainComplete
+  | TriggerTrainError
+
+export interface TriggerTrainStatus {
+  type: 'trigger_status'
+  state: string
+  n_present?: number
+  n_unstable?: number
+}
+
+export interface TriggerTrainEpoch {
+  type: 'trigger_epoch'
+  epoch: number
+  total_epochs: number
+  train_loss: number
+  train_accuracy: number
+  val_loss: number
+  val_accuracy: number
+}
+
+export interface TriggerTrainComplete {
+  type: 'trigger_complete'
+  meta: import('@/api/products').TriggerModelMeta
+  history: {
+    loss: number[]
+    accuracy: number[]
+    val_loss: number[]
+    val_accuracy: number[]
+  }
+}
+
+export interface TriggerTrainError {
+  type: 'trigger_error'
+  error: string
+}
 
 export interface TrainingStatus {
   type: 'status'

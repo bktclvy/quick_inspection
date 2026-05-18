@@ -30,13 +30,17 @@ class InspectionStateMachine:
         self._lock = threading.Lock()
         self.state = InspectionState.IDLE
 
-        # トリガーモード ("auto" or "manual")
+        # トリガーモード ("auto" / "ai" / "manual")
         self.trigger_mode: str = "auto"
 
         # 設置検知パラメータ（テンプレートマッチ）
         self.match_threshold: float = config.MATCH_THRESHOLD
         self.trigger_frames: int = config.TRIGGER_FRAMES
         self.match_margin: float = 0.10  # ROI拡大マージン（10%）
+
+        # AI トリガー (専用モデル) パラメータ
+        # present_score がこの閾値以上なら present とみなす。0.5 が softmax の自然な境界。
+        self.trigger_present_threshold: float = 0.5
 
         # 取出し検知パラメータ（背景NCC）
         self.removal_bg_threshold: float = 0.85  # 背景NCCスコアがこれ以上→取出し確認
@@ -86,6 +90,7 @@ class InspectionStateMachine:
             for key in ("match_threshold", "trigger_frames", "removal_diff_threshold",
                          "removal_frames", "removal_bg_threshold", "judged_display_ms", "match_margin",
                          "stability_threshold", "stability_frames", "pieces_per_box",
+                         "trigger_present_threshold",
                          # 旧パラメータも受け付ける（互換性）
                          "presence_threshold", "removal_threshold", "trigger_mode"):
                 if key in inspection_config:
@@ -353,69 +358,108 @@ class InspectionStateMachine:
                       "counters": self._get_counters_internal()}
             return self._attach_cycle_outputs(result)
 
-    # ── AI トリガーモード ─────────────────────────────────
+    # ── AI トリガーモード (D 案: 専用トリガーモデル) ────────
 
-    def process_frame_ai_trigger(self, roi_results: list[dict], bg_match: float | None,
-                                  frame_diff: float = 0.0) -> dict:
-        """AIトリガーモード: モデル推論結果でトリガーを判断する。
-        ROIのいずれかが 'uninspectable' を返す、または画像が不安定な間はトリガーしない。"""
+    def process_frame_ai_trigger_v2(self,
+                                    present_scores: dict[str, float] | None,
+                                    bg_match: float | None,
+                                    frame_diff: float,
+                                    roi_results: list[dict] | None = None) -> dict:
+        """AIトリガーモード (D 案): 専用トリガーモデルが返す ROI 別 present_score で判定。
+
+        present_scores: dict[roi_id, present_score (0-1)]. None は IDLE/DETECTING 時に
+                        スコアが未取得 (モデル未ロード等) であることを示す。
+        bg_match:       取出し検知用 NCC スコア (0-1)。
+        frame_diff:     前フレームとの差分平均 (0-255)。安定検知用。
+        roi_results:    INSPECTING 時の判定モデル結果。
+        """
         with self._lock:
-            return self._process_ai_trigger_internal(roi_results, bg_match, frame_diff)
+            return self._process_ai_trigger_v2_internal(
+                present_scores, bg_match, frame_diff, roi_results)
 
-    def _process_ai_trigger_internal(self, roi_results: list[dict], bg_match: float | None,
-                                      frame_diff: float) -> dict:
+    def _process_ai_trigger_v2_internal(self,
+                                        present_scores: dict[str, float] | None,
+                                        bg_match: float | None,
+                                        frame_diff: float,
+                                        roi_results: list[dict] | None) -> dict:
         counters = self._get_counters_internal()
-        diag = {"bg_match": round(bg_match, 3) if bg_match is not None else None,
-                "frame_diff": round(frame_diff, 1)}
+        threshold = self.trigger_present_threshold
+        diag = {
+            "bg_match": round(bg_match, 3) if bg_match is not None else None,
+            "frame_diff": round(frame_diff, 1),
+            "present_scores": (
+                {k: round(v, 3) for k, v in present_scores.items()}
+                if present_scores else None
+            ),
+        }
 
+        # ── IDLE: 全 ROI present + 安定 を待つ ─────────────────
         if self.state == InspectionState.IDLE:
-            has_uninspectable = any(
-                r.get("judgment") == "uninspectable"
-                for r in roi_results if "error" not in r
-            )
-            has_error = any("error" in r for r in roi_results)
+            if not present_scores:
+                # モデル未ロード等。トリガーカウントを 0 に戻して IDLE 維持
+                self._ai_trigger_count = 0
+                return {"state": "idle", "trigger_mode": "ai", "counters": counters,
+                        "trigger_count": 0, "trigger_required": self.trigger_frames,
+                        "needs_trigger_model": True, **diag}
+
+            all_present = all(s >= threshold for s in present_scores.values())
             not_stable = frame_diff > self.stability_threshold
-            if not roi_results or has_uninspectable or has_error or not_stable:
+            if not all_present or not_stable:
                 self._ai_trigger_count = 0
                 return {"state": "idle", "trigger_mode": "ai", "counters": counters,
                         "trigger_count": 0, "trigger_required": self.trigger_frames, **diag}
 
             self._ai_trigger_count += 1
             if self._ai_trigger_count >= self.trigger_frames:
-                judgment = self._make_judgment(roi_results)
-                self.last_judgment = judgment
-                self._judgment_time = time.time()
-                # AI トリガーモードは DETECTING を経由しないので、サイクル開始は
-                # 判定時刻として扱う（cycle_ms ≒ 0、inspection_ms ≒ 0）
-                if self._cycle_start_time is None:
-                    self._cycle_start_time = self._judgment_time
-                self.state = InspectionState.JUDGED
+                # 設置検知成立 → DETECTING へ (安定確認後 INSPECTING)
+                self.state = InspectionState.DETECTING
                 self._ai_trigger_count = 0
-                self.count_total += 1
-                if judgment["overall_judgment"].upper() == "OK":
-                    self.count_ok += 1
-                else:
-                    self.count_ng += 1
-                self._save_counters()
-                self._build_judgment_event(judgment)
-                counters = self._get_counters_internal()
-                return {"state": "judged", "trigger_mode": "ai",
-                        "counters": counters, **diag, **judgment}
+                self._stability_count = 0
+                self._cycle_start_time = time.time()
+                return {"state": "detecting", "trigger_mode": "ai", "counters": counters,
+                        "stability_count": 0,
+                        "stability_required": self.stability_frames, **diag}
 
             return {"state": "idle", "trigger_mode": "ai", "counters": counters,
                     "trigger_count": self._ai_trigger_count,
                     "trigger_required": self.trigger_frames, **diag}
 
-        # 非IDLE: 取出し検知のみ (_process_frame_unified_internal に委譲)
-        if bg_match is None:
-            result = {"state": self.state.value, "trigger_mode": "ai",
-                      "counters": counters, **diag}
-            if self.last_judgment:
-                result.update(self.last_judgment)
-            return result
+        # ── DETECTING: 安定待ち。途中で unstable になれば abort ─
+        if self.state == InspectionState.DETECTING:
+            if present_scores:
+                any_unstable = any(s < threshold for s in present_scores.values())
+                if any_unstable:
+                    self.state = InspectionState.IDLE
+                    self._stability_count = 0
+                    self._cycle_start_time = None
+                    return {"state": "idle", "trigger_mode": "ai",
+                            "counters": counters, **diag}
 
-        result = self._process_frame_unified_internal({}, bg_match, 0.0, None)
+            if frame_diff <= self.stability_threshold:
+                self._stability_count += 1
+            else:
+                self._stability_count = 0
+
+            if self._stability_count >= self.stability_frames:
+                self.state = InspectionState.INSPECTING
+                self._stability_count = 0
+                return {"state": "inspecting", "trigger_mode": "ai",
+                        "counters": counters, **diag}
+
+            return {"state": "detecting", "trigger_mode": "ai", "counters": counters,
+                    "stability_count": self._stability_count,
+                    "stability_required": self.stability_frames, **diag}
+
+        # ── INSPECTING / JUDGED / WAITING_* は unified と同じロジックを流用 ─
+        # AI モードでは IDLE/DETECTING を上で処理済み。ここから先は判定結果反映と
+        # 取出し検知だけが必要。bg_match が None なら 0.0 (背景見えない = 製品あり) を
+        # 渡して、取出し検知をブロックしておく。
+        bg = bg_match if bg_match is not None else 0.0
+        result = self._process_frame_unified_internal(
+            match_scores={}, bg_match=bg, frame_diff=frame_diff, roi_results=roi_results,
+        )
         result["trigger_mode"] = "ai"
+        result.update(diag)
         return result
 
     # ── 旧APIとの互換 ────────────────────────────────────

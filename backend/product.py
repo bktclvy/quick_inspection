@@ -715,10 +715,12 @@ class ProductManager:
             self._trigger_templates.setdefault(product_id, [])
             self._trigger_templates[product_id].append(gray)
 
-            # 領域情報もJSONで保存
+            # 領域情報もJSONで保存。連番は .jpg の数だけで判断する
+            # (json が消えてる状態でも壊れないように)
             tdir = self._trigger_tpl_dir(product_id)
             os.makedirs(tdir, exist_ok=True)
-            idx = len(os.listdir(tdir)) // 2 + 1  # .jpg + .json pairs
+            jpg_count = sum(1 for f in os.listdir(tdir) if f.endswith(".jpg"))
+            idx = jpg_count + 1
             _imwrite(os.path.join(tdir, f"{idx:03d}.jpg"), gray)
             with open(os.path.join(tdir, f"{idx:03d}.json"), "w") as f:
                 json.dump(region or p.trigger_region, f)
@@ -729,12 +731,52 @@ class ProductManager:
             tpls = self._trigger_templates.get(product_id, [])
             if index < 0 or index >= len(tpls):
                 return False
-            tpls.pop(index)
             tdir = self._trigger_tpl_dir(product_id)
+
+            # 既存 json (region メタ) を index 順で読み込んでおく
+            saved_regions: list[dict | None] = []
+            if os.path.isdir(tdir):
+                for i in range(1, len(tpls) + 1):
+                    jp = os.path.join(tdir, f"{i:03d}.json")
+                    region_obj: dict | None = None
+                    if os.path.exists(jp):
+                        try:
+                            with open(jp, "r") as f:
+                                region_obj = json.load(f)
+                        except (json.JSONDecodeError, OSError):
+                            region_obj = None
+                    saved_regions.append(region_obj)
+            while len(saved_regions) < len(tpls):
+                saved_regions.append(None)
+
+            # 削除
+            tpls.pop(index)
+            saved_regions.pop(index)
+
             _safe_delete(tdir, self._dir)
             os.makedirs(tdir, exist_ok=True)
+            p = self._products.get(product_id)
+            fallback_region = p.trigger_region if p else None
             for i, img in enumerate(tpls):
                 _imwrite(os.path.join(tdir, f"{i + 1:03d}.jpg"), img)
+                region_obj = saved_regions[i] if i < len(saved_regions) else None
+                if region_obj is None:
+                    region_obj = fallback_region
+                with open(os.path.join(tdir, f"{i + 1:03d}.json"), "w") as f:
+                    json.dump(region_obj, f)
+            return True
+
+    def delete_all_trigger_templates(self, product_id: str) -> bool:
+        """テンプレートを全消しする。1 呼び出しでメモリもディスクもクリアにする。"""
+        with self._lock:
+            self._trigger_templates[product_id] = []
+            tdir = self._trigger_tpl_dir(product_id)
+            if os.path.isdir(tdir):
+                try:
+                    _safe_delete(tdir, self._dir)
+                except Exception:
+                    pass
+            os.makedirs(tdir, exist_ok=True)
             return True
 
     def get_trigger_template_count(self, product_id: str) -> int:

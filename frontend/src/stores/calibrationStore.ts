@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { productsApi } from '../api/products'
 import { Toast } from '../components/layout/Toast'
+import { useAppStore } from './appStore'
 import type { TriggerMode } from '../types'
 
 export type CalibStepId = 'worker' | 'bg' | 'template' | 'test'
@@ -32,15 +33,16 @@ interface CalibrationState {
 
   captureBackground: () => Promise<void>
   keepExistingBackground: () => void
-  captureTemplate: (templateCount: number) => Promise<void>
+  captureTemplate: () => Promise<void>
   keepExistingTemplate: () => void
   setLiveScore: (score: number | null) => void
 }
 
 function stepsFor(mode: TriggerMode): CalibStepId[] {
   // 全モードで「作業者」を最初のステップとして要求
-  // AI トリガー: 取出しも AI 判定なので背景不要
-  if (mode === 'ai') return ['worker', 'test']
+  // AI トリガー: 取出し検知に背景 NCC を使うので背景必須。
+  //             トリガーモデル自体はセットアップ側で学習する前提。
+  if (mode === 'ai') return ['worker', 'bg', 'test']
   // 手動: 取出し検知に背景が要るがテンプレートは不要
   if (mode === 'manual') return ['worker', 'bg', 'test']
   // auto_background: 背景のみ
@@ -100,15 +102,16 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
 
   keepExistingBackground: () => set({ bgUseExisting: true, bgCaptured: false }),
 
-  captureTemplate: async (templateCount: number) => {
+  captureTemplate: async () => {
     const { productId } = get()
     if (!productId) return
     set({ templateCapturing: true })
     try {
-      if (templateCount > 0) {
-        await productsApi.clearTriggerTemplates(productId, templateCount)
-      }
+      // 既存テンプレを一括クリア (メモリもディスクも一発で空にする)
+      await productsApi.clearTriggerTemplates(productId)
       await productsApi.captureTriggerTemplate(productId)
+      // appStore を最新化して trigger_template_count を反映
+      try { await useAppStore.getState().refreshROIs() } catch { /* ignore */ }
       set({ templateCaptured: true, templateUseExisting: false, templateCapturing: false })
     } catch {
       Toast.error('テンプレートの撮影に失敗しました')

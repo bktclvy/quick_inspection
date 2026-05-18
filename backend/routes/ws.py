@@ -308,8 +308,9 @@ async def inspection_stream(websocket: WebSocket):
                 await asyncio.sleep(0.05)
                 continue
 
-            # ── AI トリガーモード ──
+            # ── AI トリガーモード (D 案: 専用トリガーモデル) ──
             if getattr(_state_machine, 'trigger_mode', 'auto') == 'ai':
+                from backend.trigger_model import trigger_model_manager
                 t_frame_ai = time.monotonic()
                 raw_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 if prev_gray is None:
@@ -322,16 +323,31 @@ async def inspection_stream(websocket: WebSocket):
                     None, product_manager.background_match_score_gray,
                     _active_product_id, raw_gray)
 
-                roi_results_ai: list[dict] = []
+                present_scores: dict[str, float] | None = None
+                roi_results_ai: list[dict] | None = None
+                t_trigger_ms: int | None = None
                 t_infer_ms: int | None = None
-                if _state_machine.state == InspectionState.IDLE:
+
+                if _state_machine.state in (InspectionState.IDLE, InspectionState.DETECTING):
+                    # 軽量トリガーモデルで毎フレーム present/unstable 判定
+                    if trigger_model_manager.is_loaded_for(_active_product_id):
+                        t0 = time.monotonic()
+                        scores = await loop.run_in_executor(
+                            None, trigger_model_manager.predict_rois_batched, frame, roi_dicts)
+                        t_trigger_ms = int((time.monotonic() - t0) * 1000)
+                        if scores is not None:
+                            present_scores = {rid: r["present_score"]
+                                              for rid, r in scores.items()}
+                elif _state_machine.state == InspectionState.INSPECTING:
+                    # 重い判定モデルはトリガー後 1 回だけ
                     t0 = time.monotonic()
                     roi_results_ai = await loop.run_in_executor(
                         None, _model_manager.predict_rois, frame, roi_dicts)
                     t_infer_ms = int((time.monotonic() - t0) * 1000)
 
                 prev_state = _state_machine.state
-                result = _state_machine.process_frame_ai_trigger(roi_results_ai, bg_match, frame_diff_ai)
+                result = _state_machine.process_frame_ai_trigger_v2(
+                    present_scores, bg_match, frame_diff_ai, roi_results_ai)
 
                 if result.get("state") == "judged" and prev_state != InspectionState.JUDGED:
                     camera.freeze_frame(frame)
@@ -345,7 +361,8 @@ async def inspection_stream(websocket: WebSocket):
                 _record_state_events(result)
                 t_total_ai = int((time.monotonic() - t_frame_ai) * 1000)
                 msg = {"type": "state_update", **result,
-                       "_timings": {"match_ms": 0, "infer_ms": t_infer_ms, "total_ms": t_total_ai}}
+                       "_timings": {"trigger_ms": t_trigger_ms, "infer_ms": t_infer_ms,
+                                    "total_ms": t_total_ai}}
                 _inject_scale(msg)
                 await websocket.send_json(msg)
                 await asyncio.sleep(0.03)

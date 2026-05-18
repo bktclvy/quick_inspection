@@ -163,6 +163,13 @@ async def delete_trigger_template(product_id: str, index: int):
     return {"message": "削除しました", "remaining": count}
 
 
+@router.delete("/products/{product_id}/trigger-templates")
+async def delete_all_trigger_templates_endpoint(product_id: str):
+    """トリガーテンプレートを全消去 (メモリもディスクも) する。"""
+    product_manager.delete_all_trigger_templates(product_id)
+    return {"message": "全テンプレートを削除しました", "remaining": 0}
+
+
 # ─── ROI（製品内）────────────────────────────────────────
 
 class CreateROI(BaseModel):
@@ -572,6 +579,199 @@ async def import_folder(product_id: str, data: ImportFolder):
     return {"imported": imported, "count": count, "message": f"{imported} 枚インポートしました"}
 
 
+# ─── AI トリガー (専用モデル + 不安定クラス合成) ─────────────
+
+class SynthesizeUnstable(BaseModel):
+    patterns: list[str] | None = None
+    count_multiplier: float = 1.0
+
+
+class TrainTriggerModel(BaseModel):
+    epochs: int = 8
+    learning_rate: float = 0.001
+    batch_size: int = 32
+    validation_split: float = 0.2
+
+
+@router.get("/products/{product_id}/ai-trigger/status")
+async def ai_trigger_status(product_id: str):
+    """AI トリガーの状態。
+    - 製品単位: トリガーモデル (trigger.keras) の存在・学習日時・メタ
+    - ROI 単位: OK+NG 画像数 / unstable サンプル数 / 合成メタ
+    """
+    from backend import synth, trigger_model
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+
+    # 旧データ (datasets/<roi>/unstable/) が残っていれば自動で trigger_data/ へ移行
+    synth.migrate_legacy_unstable(product_id)
+
+    bg_available = product_manager.has_background(product_id)
+    trigger_status = trigger_model.get_status(product_id)
+    capture_counts = synth.get_capture_counts(product_id)
+
+    rois_status = []
+    for roi in p.rois:
+        roi_ds = product_manager.roi_datasets_dir(product_id, roi.id)
+        source_count = 0
+        if os.path.isdir(roi_ds):
+            for cls in os.listdir(roi_ds):
+                cls_dir = os.path.join(roi_ds, cls)
+                if not os.path.isdir(cls_dir):
+                    continue
+                if cls.startswith("."):
+                    continue
+                source_count += len([
+                    f for f in os.listdir(cls_dir)
+                    if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                ])
+
+        unstable = synth.get_unstable_status(product_id, roi.id)
+        rois_status.append({
+            "roi_id": roi.id,
+            "roi_name": roi.name,
+            "source_count": source_count,
+            "unstable": unstable,
+        })
+
+    return {
+        "background_available": bg_available,
+        "trigger_model": trigger_status,
+        "captures": capture_counts,
+        "rois": rois_status,
+    }
+
+
+@router.post("/products/{product_id}/rois/{roi_id}/unstable-class/synthesize")
+async def synthesize_unstable(product_id: str, roi_id: str, data: SynthesizeUnstable):
+    from backend import synth
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    if not p.get_roi(roi_id):
+        raise HTTPException(404, "ROIが見つかりません")
+    result = synth.synthesize_unstable_for_roi(
+        product_id, roi_id,
+        patterns=data.patterns,
+        count_multiplier=data.count_multiplier,
+    )
+    if result["generated"] == 0:
+        raise HTTPException(400, "合成に失敗しました: " + " / ".join(result.get("errors") or ["原因不明"]))
+    return result
+
+
+@router.delete("/products/{product_id}/rois/{roi_id}/unstable-class")
+async def delete_unstable(product_id: str, roi_id: str):
+    from backend import synth
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    deleted = synth.delete_synth_unstable(product_id, roi_id)
+    return {"deleted": deleted}
+
+
+@router.get("/products/{product_id}/rois/{roi_id}/unstable-class/previews")
+async def list_unstable_previews(product_id: str, roi_id: str, n: int = 8):
+    from backend import synth
+    files = synth.list_synth_previews(product_id, roi_id, n=n)
+    return {"files": files}
+
+
+@router.get("/products/{product_id}/rois/{roi_id}/unstable-class/preview/{filename}")
+async def serve_unstable_preview(product_id: str, roi_id: str, filename: str):
+    from backend import synth
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "不正なファイル名")
+    if not filename.startswith(synth.SYNTH_PREFIX):
+        raise HTTPException(400, "不正なファイル名")
+    filepath = os.path.join(synth.get_unstable_dir(product_id, roi_id), filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "画像が見つかりません")
+    return FileResponse(filepath, media_type="image/jpeg")
+
+
+class CaptureBody(BaseModel):
+    state: str  # "present" | "absent" | "obstructed"
+
+
+@router.post("/products/{product_id}/ai-trigger/capture")
+async def capture_trigger_frame(product_id: str, body: CaptureBody):
+    """現在のカメラフレームを撮影画像として保存する。
+    state は "present" / "absent" / "obstructed" のいずれか。
+    """
+    from backend import synth
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    if body.state not in synth.CAPTURE_STATES:
+        raise HTTPException(400, f"未知の状態: {body.state}")
+    frame = camera.read_frame()
+    if frame is None:
+        raise HTTPException(500, "カメラからフレームを取得できません")
+    synth.record_capture(product_id, body.state, frame)
+    counts = synth.get_capture_counts(product_id)
+    return {"state": body.state, "counts": counts}
+
+
+@router.delete("/products/{product_id}/ai-trigger/captures")
+async def delete_trigger_captures(product_id: str, state: str | None = None):
+    """撮影画像を削除する。state を指定するとその状態のみ、無ければ全削除。"""
+    from backend import synth
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    if state is not None and state not in synth.CAPTURE_STATES:
+        raise HTTPException(400, f"未知の状態: {state}")
+    deleted = synth.clear_captures(product_id, state)
+    counts = synth.get_capture_counts(product_id)
+    return {"deleted": deleted, "counts": counts}
+
+
+@router.post("/products/{product_id}/ai-trigger/train")
+async def train_trigger(product_id: str, params: TrainTriggerModel):
+    """専用トリガーモデルの学習を開始する (バックグラウンド、WS で進捗通知)。"""
+    from backend.trigger_model import trigger_trainer
+    p = product_manager.get(product_id)
+    if not p:
+        raise HTTPException(404, "製品が見つかりません")
+    if trigger_trainer.is_running():
+        raise HTTPException(400, "学習は既に実行中です")
+    trigger_trainer.start(
+        product_id,
+        epochs=params.epochs,
+        learning_rate=params.learning_rate,
+        batch_size=params.batch_size,
+        validation_split=params.validation_split,
+    )
+    return {"message": "AI トリガーモデルの学習を開始しました"}
+
+
+@router.post("/products/{product_id}/ai-trigger/stop")
+async def stop_trigger_training(product_id: str):
+    from backend.trigger_model import trigger_trainer
+    trigger_trainer.stop()
+    return {"message": "学習停止をリクエストしました"}
+
+
+@router.delete("/products/{product_id}/ai-trigger/model")
+async def delete_trigger_model(product_id: str):
+    from backend.trigger_model import (
+        trigger_model_path, trigger_meta_path, trigger_model_manager,
+    )
+    mpath = trigger_model_path(product_id)
+    meta = trigger_meta_path(product_id)
+    deleted = False
+    trigger_model_manager.unload(product_id)
+    for fp in [mpath, meta]:
+        if os.path.exists(fp):
+            os.remove(fp)
+            deleted = True
+    if not deleted:
+        raise HTTPException(404, "トリガーモデルが存在しません")
+    return {"message": "トリガーモデルを削除しました"}
+
+
 # ─── モデル（製品スコープ）────────────────────────────────
 
 @router.get("/products/{product_id}/models")
@@ -894,6 +1094,13 @@ async def start_inspection(data: InspectionStart):
             )
             if os.path.exists(model_path):
                 model_manager.load(roi.model_name, model_path, meta_path)
+
+    # AI モードならトリガーモデルもロード (存在すれば)
+    if p.inspection_config.get("trigger_mode") == "ai":
+        from backend.trigger_model import trigger_model_manager, trigger_model_path
+        if (not trigger_model_manager.is_loaded_for(data.product_id)
+                and os.path.exists(trigger_model_path(data.product_id))):
+            trigger_model_manager.load(data.product_id)
 
     await ws_start(data.product_id, data.worker_id, model_manager, state_machine,
                    test_mode=data.test_mode)

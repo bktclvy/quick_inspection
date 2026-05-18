@@ -428,8 +428,8 @@ function ProductStep({ productId }: { productId: string }) {
   }, [productId, templateCaptured, setLiveScore])
 
   const handleCapture = useCallback(() => {
-    captureTemplate(templateCount)
-  }, [captureTemplate, templateCount])
+    captureTemplate()
+  }, [captureTemplate])
 
   // Space キーで撮影
   useKeyboard('Space', () => {

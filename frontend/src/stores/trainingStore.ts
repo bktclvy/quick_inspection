@@ -112,6 +112,45 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
       case 'error':
         set({ isRunning: false, statusText: `error: ${msg.error}` })
         break
+
+      // AI トリガーモデル学習 (D 案)
+      case 'trigger_status':
+        if (msg.state === 'stopped') {
+          set({ isRunning: false, statusText: 'trigger_stopped' })
+        } else {
+          set({ isRunning: true, statusText: `trigger_${msg.state}` })
+        }
+        break
+
+      case 'trigger_epoch': {
+        const chart = get().chartData
+        set({
+          isRunning: true,
+          epoch: msg.epoch,
+          totalEpochs: msg.total_epochs,
+          trainLoss: msg.train_loss,
+          trainAccuracy: msg.train_accuracy,
+          valLoss: msg.val_loss,
+          valAccuracy: msg.val_accuracy,
+          chartData: {
+            labels: [...chart.labels, msg.epoch],
+            loss: [...chart.loss, msg.train_loss],
+            valLoss: [...chart.valLoss, msg.val_loss],
+            accuracy: [...chart.accuracy, msg.train_accuracy],
+            valAccuracy: [...chart.valAccuracy, msg.val_accuracy],
+          },
+          statusText: 'trigger_training',
+        })
+        break
+      }
+
+      case 'trigger_complete':
+        set({ isRunning: false, statusText: 'trigger_complete' })
+        break
+
+      case 'trigger_error':
+        set({ isRunning: false, statusText: `trigger_error: ${msg.error}` })
+        break
     }
   },
 

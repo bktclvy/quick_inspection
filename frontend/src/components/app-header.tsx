@@ -150,6 +150,19 @@ export function AppHeader() {
                   return
                 }
                 const mode = ((selectedProduct?.inspection_config as { trigger_mode?: TriggerMode } | undefined)?.trigger_mode) ?? 'auto_background'
+                // AI モード: トリガーモデルが学習済みでないと検査が IDLE で固まる
+                if (mode === 'ai') {
+                  try {
+                    const s = await productsApi.aiTriggerStatus(selectedProductId)
+                    if (!s.trigger_model.exists) {
+                      alert('AI トリガーモデルが未学習です。セットアップ → トリガーステップ → 「AI トリガーモデルを学習」を先に実行してください。')
+                      return
+                    }
+                  } catch {
+                    alert('AI トリガーの状態を確認できませんでした。バックエンドの接続を確認してください。')
+                    return
+                  }
+                }
                 const tmplExists = (selectedProduct?.trigger_template_count ?? 0) > 0
                 let bgExists = false
                 try {
@@ -158,10 +171,7 @@ export function AppHeader() {
                 } catch { /* 無視: false のまま */ }
                 openCalibration(selectedProductId, mode, bgExists, tmplExists)
               }}
-              disabled={!selectedProductId || starting || (
-                (selectedProduct?.inspection_config?.packing?.enabled) === true &&
-                !(scalePortOpen && scaleLive)
-              )}
+              disabled={!selectedProductId || starting}
               style={{
                 height: 34, padding: '0 18px',
                 fontSize: 13, fontWeight: 600, fontFamily: 'inherit', color: '#ffffff',
